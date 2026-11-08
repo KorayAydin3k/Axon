@@ -5,10 +5,13 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.engine.state_machine import InvalidWorkflowTransition
+from app.engine.workflow_engine import SupportPlan, run_support_demo
 from app.persistence.database import engine
-from app.persistence.models import Workflow
+from app.persistence.models import Workflow, WorkflowEvent
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -52,3 +55,51 @@ def get_workflow(
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return workflow
+
+
+class WorkflowEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    from_status: str
+    to_status: str
+    details: dict[str, object]
+    created_at: datetime
+
+
+@router.post("/{workflow_id}/run", response_model=WorkflowResponse)
+def run_workflow(
+    workflow_id: UUID,
+    session: Annotated[Session, Depends(get_session)],
+    plan: SupportPlan = SupportPlan.TICKET_LIST,
+) -> WorkflowResponse:
+    with session.begin():
+        workflow = session.get(Workflow, workflow_id, with_for_update=True)
+        if workflow is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        try:
+            run_support_demo(session, workflow, plan)
+        except InvalidWorkflowTransition as error:
+            raise HTTPException(
+                status_code=409, detail=f"Workflow is already {workflow.status}"
+            ) from error
+
+        result = WorkflowResponse.model_validate(workflow)
+
+    return result
+
+
+@router.get("/{workflow_id}/events", response_model=list[WorkflowEventResponse])
+def get_workflow_events(
+    workflow_id: UUID, session: Annotated[Session, Depends(get_session)]
+) -> list[WorkflowEvent]:
+    if session.get(Workflow, workflow_id) is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+
+    statement = (
+        select(WorkflowEvent)
+        .where(WorkflowEvent.workflow_id == workflow_id)
+        .order_by(WorkflowEvent.id)
+    )
+    return list(session.scalars(statement))

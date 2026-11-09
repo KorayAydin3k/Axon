@@ -101,8 +101,9 @@ def generate_plan(user_request: str) -> WorkflowPlan:
         "think": False,
         "options": {"temperature": 0, "num_ctx": 4096, "num_predict": 128},
     }
+    base_url = getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
     request = Request(
-        "http://127.0.0.1:11434/api/chat",
+        f"{base_url}/api/chat",
         data=dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",

@@ -1,12 +1,13 @@
-from dataclasses import dataclass
 from enum import StrEnum
 from graphlib import TopologicalSorter
+from json import dumps
 
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus, transition
 from app.persistence.models import Workflow, WorkflowEvent, WorkflowStep
 from app.tools.registry import SUPPORT_TOOLS, ToolOutput
+from app.validation.plan import PlanStep, WorkflowPlan
 
 
 class SupportPlan(StrEnum):
@@ -14,38 +15,59 @@ class SupportPlan(StrEnum):
     SUPPORT_FOLLOWUP = "support_followup"
 
 
-@dataclass(frozen=True)
-class StepSpec:
-    name: str
-    tool: str
-    depends_on: tuple[str, ...] = ()
-
-
-_FIND_TICKETS = StepSpec("find_tickets", "list_tickets")
+_FIND_TICKETS = {
+    "name": "find_tickets",
+    "tool": "list_tickets",
+    "depends_on": [],
+    "arguments": {"limit": 3},
+}
 _PLANS = {
     SupportPlan.TICKET_LIST: (_FIND_TICKETS,),
     SupportPlan.SUPPORT_FOLLOWUP: (
         _FIND_TICKETS,
-        StepSpec("summarize_tickets", "summarize_tickets", ("find_tickets",)),
-        StepSpec("create_tasks", "create_followup_tasks", ("summarize_tickets",)),
+        {
+            "name": "summarize_tickets",
+            "tool": "summarize_tickets",
+            "depends_on": ["find_tickets"],
+            "arguments": {},
+        },
+        {
+            "name": "create_tasks",
+            "tool": "create_followup_tasks",
+            "depends_on": ["summarize_tickets"],
+            "arguments": {},
+        },
     ),
+}
+_REQUIRED_INPUTS = {
+    "list_tickets": (),
+    "summarize_tickets": ("list_tickets",),
+    "create_followup_tasks": ("summarize_tickets",),
 }
 
 
-def execution_order(steps: tuple[StepSpec, ...]) -> list[StepSpec]:
+def execution_order(steps: tuple[PlanStep, ...]) -> list[PlanStep]:
     by_name = {step.name: step for step in steps}
     if len(by_name) != len(steps):
         raise ValueError("Duplicate step name")
+    if len({step.tool for step in steps}) != len(steps):
+        raise ValueError("A tool may appear only once in a support plan")
 
     for step in steps:
         if step.tool not in SUPPORT_TOOLS:
-            raise ValueError(f"Unknown tool: {step.tool}")
+            raise ValueError(f"Unregistered tool: {step.tool}")
         missing = set(step.depends_on) - by_name.keys()
         if missing:
             raise ValueError(f"Unknown dependencies for {step.name}: {sorted(missing)}")
 
     graph = {step.name: step.depends_on for step in steps}
-    return [by_name[name] for name in TopologicalSorter(graph).static_order()]
+    ordered = [by_name[name] for name in TopologicalSorter(graph).static_order()]
+    for step in ordered:
+        input_tools = tuple(by_name[name].tool for name in step.depends_on)
+        if input_tools != _REQUIRED_INPUTS[step.tool]:
+            raise ValueError(f"Incompatible dependencies for {step.name}")
+
+    return ordered
 
 
 def _change_status(
@@ -66,17 +88,20 @@ def _change_status(
     )
 
 
-def run_support_demo(
-    session: Session, workflow: Workflow, plan: SupportPlan
-) -> None:
-    steps = execution_order(_PLANS[plan])
+def run_plan(session: Session, workflow: Workflow, raw_plan: str) -> None:
+    plan = WorkflowPlan.model_validate_json(raw_plan)
+    steps = execution_order(plan.steps)
     _change_status(session, workflow, WorkflowStatus.RUNNING, {})
 
     outputs: dict[str, ToolOutput] = {}
+    tool_outputs: dict[str, ToolOutput] = {}
     for position, step in enumerate(steps, start=1):
         inputs = [outputs[name] for name in step.depends_on]
-        output = SUPPORT_TOOLS[step.tool](session, workflow.id, inputs)
+        output = SUPPORT_TOOLS[step.tool](
+            session, workflow.id, inputs, step.arguments.model_dump()
+        )
         outputs[step.name] = output
+        tool_outputs[step.tool] = output
         session.add(
             WorkflowStep(
                 workflow_id=workflow.id,
@@ -93,8 +118,12 @@ def run_support_demo(
         WorkflowStatus.COMPLETED,
         {
             "tool": steps[-1].tool,
-            "tickets": outputs["find_tickets"],
+            "tickets": tool_outputs["list_tickets"],
             "steps": [step.name for step in steps],
-            "followup_tasks": outputs.get("create_tasks", []),
+            "followup_tasks": tool_outputs.get("create_followup_tasks", []),
         },
     )
+
+
+def run_support_demo(session: Session, workflow: Workflow, plan: SupportPlan) -> None:
+    run_plan(session, workflow, dumps({"steps": _PLANS[plan]}))

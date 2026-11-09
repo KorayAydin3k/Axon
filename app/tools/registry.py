@@ -7,17 +7,24 @@ from app.persistence.models import FollowupTask
 from app.tools.tickets import list_tickets
 
 ToolOutput = list[dict[str, object]]
-Tool = Callable[[Session, UUID, list[ToolOutput]], ToolOutput]
+ToolArguments = dict[str, int]
+Tool = Callable[[Session, UUID, list[ToolOutput], ToolArguments], ToolOutput]
 
 
 def _list_tickets(
-    _session: Session, _workflow_id: UUID, _inputs: list[ToolOutput]
+    _session: Session,
+    _workflow_id: UUID,
+    _inputs: list[ToolOutput],
+    arguments: ToolArguments,
 ) -> ToolOutput:
-    return [dict(ticket) for ticket in list_tickets(limit=3)]
+    return [dict(ticket) for ticket in list_tickets(limit=arguments["limit"])]
 
 
 def _summarize_tickets(
-    _session: Session, _workflow_id: UUID, inputs: list[ToolOutput]
+    _session: Session,
+    _workflow_id: UUID,
+    inputs: list[ToolOutput],
+    _arguments: ToolArguments,
 ) -> ToolOutput:
     (tickets,) = inputs
     return [
@@ -30,7 +37,10 @@ def _summarize_tickets(
 
 
 def _create_followup_tasks(
-    session: Session, workflow_id: UUID, inputs: list[ToolOutput]
+    session: Session,
+    workflow_id: UUID,
+    inputs: list[ToolOutput],
+    _arguments: ToolArguments,
 ) -> ToolOutput:
     (summaries,) = inputs
     for item in summaries:

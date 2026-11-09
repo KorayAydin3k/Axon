@@ -12,6 +12,8 @@ from app.engine.state_machine import InvalidWorkflowTransition
 from app.engine.workflow_engine import SupportPlan, run_support_demo
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
+from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
+from app.validation.plan import WorkflowPlan
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
@@ -103,3 +105,22 @@ def get_workflow_events(
         .order_by(WorkflowEvent.id)
     )
     return list(session.scalars(statement))
+
+
+@router.post("/{workflow_id}/plan", response_model=WorkflowPlan)
+def preview_workflow_plan(
+    workflow_id: UUID, session: Annotated[Session, Depends(get_session)]
+) -> WorkflowPlan:
+    with session.begin():
+        request_text = session.scalar(
+            select(Workflow.request).where(Workflow.id == workflow_id)
+        )
+        if request_text is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+    try:
+        return generate_plan(request_text)
+    except PlannerRejected as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except PlannerError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error

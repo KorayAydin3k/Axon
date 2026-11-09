@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: PostgreSQL integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: postgresql+psycopg://axon:axon_ci_password@127.0.0.1:5432/axon
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: axon
+          POSTGRES_USER: axon
+          POSTGRES_PASSWORD: axon_ci_password
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U axon -d axon"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Axon and test dependencies
+        run: python -m pip install -e '.[test]'
+
+      - name: Apply and verify migrations
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Run regression tests
+        run: python -m pytest -q tests/integration

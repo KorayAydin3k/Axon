@@ -10,3 +10,6 @@ dependencies = ["fastapi", "uvicorn", "sqlalchemy>=2,<3", "psycopg[binary]>=3,<4
 
 [tool.setuptools.packages.find]
 include = ["app", "app.*"]
+
+[project.optional-dependencies]
+test = ["httpx2>=2,<3", "pytest>=8.4,<10", "starlette>=1.10,<2"]

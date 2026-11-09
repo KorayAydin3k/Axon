@@ -14,6 +14,9 @@ class Workflow(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     request: Mapped[str] = mapped_column(Text)
+    generated_plan: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     status: Mapped[str] = mapped_column(String(32), server_default="PENDING")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

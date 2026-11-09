@@ -38,6 +38,7 @@ services:
       AXON_DATABASE_HOST: db
       AXON_APPROVAL_TOKEN: "${AXON_APPROVAL_TOKEN:-}"
       OLLAMA_BASE_URL: http://ollama:11434
+      AXON_TRACE_EXPORT: "${AXON_TRACE_EXPORT:-off}"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:4b}"
     ports:
       - "127.0.0.1:8002:8000"

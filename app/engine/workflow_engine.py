@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus, transition
+from app.observability.tracing import trace_span
 from app.persistence.models import Workflow, WorkflowApproval, WorkflowEvent, WorkflowStep
 from app.tools.registry import (
     PermanentToolError,
@@ -280,7 +281,13 @@ def _execute_step(
 
             if wait_seconds == 0:
                 try:
-                    with session.begin_nested():
+                    with (
+                        trace_span(
+                            "workflow.tool",
+                            attributes={"axon.tool": step.tool, "axon.step.position": position},
+                        ),
+                        session.begin_nested(),
+                    ):
                         output = SUPPORT_TOOLS[step.tool](
                             session, workflow_id, inputs, step.arguments.model_dump()
                         )

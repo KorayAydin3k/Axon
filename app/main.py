@@ -6,11 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from opentelemetry.trace import SpanKind, StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.workflows import router as workflows_router
 from app.observability.telemetry import current_request_id, log_event, metrics_registry
+from app.observability.tracing import trace_span
 
 app = FastAPI(title="Axon")
 app.include_router(workflows_router)
@@ -56,23 +58,35 @@ async def observe_request(
     request_id = uuid4().hex
     context_token = current_request_id.set(request_id)
     started = perf_counter()
+    method = request.method if request.method in _HTTP_METHODS else "OTHER"
     try:
-        try:
-            response = await call_next(request)
-        except Exception as error:
-            log_event("http.error", error_type=type(error).__name__)
-            response = JSONResponse(status_code=500, content={"detail": _SERVER_ERROR})
-
-        response.headers["X-Request-ID"] = request_id
-        route = getattr(request.scope.get("route"), "path", "<unmatched>")
-        log_event(
+        with trace_span(
             "http.request",
-            method=request.method if request.method in _HTTP_METHODS else "OTHER",
-            route=route,
-            status_code=response.status_code,
-            duration_ms=round((perf_counter() - started) * 1000, 2),
-        )
-        return response
+            kind=SpanKind.SERVER,
+            attributes={"http.request.method": method, "axon.request_id": request_id},
+        ) as span:
+            try:
+                response = await call_next(request)
+            except Exception as error:
+                log_event("http.error", error_type=type(error).__name__)
+                response = JSONResponse(status_code=500, content={"detail": _SERVER_ERROR})
+
+            response.headers["X-Request-ID"] = request_id
+            route = getattr(request.scope.get("route"), "path", "<unmatched>")
+            if route != "<unmatched>":
+                span.set_attribute("http.route", route)
+            span.set_attribute("http.response.status_code", response.status_code)
+            if response.status_code >= 500:
+                span.set_status(StatusCode.ERROR)
+
+            log_event(
+                "http.request",
+                method=method,
+                route=route,
+                status_code=response.status_code,
+                duration_ms=round((perf_counter() - started) * 1000, 2),
+            )
+            return response
     finally:
         current_request_id.reset(context_token)
 

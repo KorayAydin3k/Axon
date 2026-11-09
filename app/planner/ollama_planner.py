@@ -5,9 +5,11 @@ from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
 
 from app.engine.workflow_engine import execution_order
+from app.observability.tracing import trace_span
 from app.validation.plan import PlanModel, SupportAction, TicketLimit, WorkflowPlan, build_support_plan
 from app.validation.policy import ToolPolicyViolation
 
@@ -110,7 +112,10 @@ def generate_plan(user_request: str) -> WorkflowPlan:
     )
 
     try:
-        with urlopen(request, timeout=180) as response:
+        with (
+            trace_span("ollama.chat", kind=SpanKind.CLIENT),
+            urlopen(request, timeout=180) as response,
+        ):
             body = load(response)
     except HTTPError as error:
         raise PlannerError(f"Ollama returned HTTP {error.code}") from error

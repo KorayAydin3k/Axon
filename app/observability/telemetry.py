@@ -11,6 +11,8 @@ from uuid import UUID
 
 from prometheus_client import CollectorRegistry, Histogram
 
+from app.observability.tracing import active_trace_id, trace_span
+
 current_request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
 
 logger = getLogger("axon.telemetry")
@@ -31,6 +33,8 @@ stage_duration = Histogram(
 
 
 def log_event(event: str, **fields: object) -> None:
+    if trace_id := active_trace_id():
+        fields["trace_id"] = trace_id
     logger.info(dumps({
         "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
         "event": event,
@@ -43,20 +47,21 @@ def log_event(event: str, **fields: object) -> None:
 def observe_stage(
     stage: Literal["planning", "execution"], workflow_id: UUID
 ) -> Iterator[None]:
-    started = perf_counter()
-    outcome = "ok"
-    try:
-        yield
-    except Exception:
-        outcome = "error"
-        raise
-    finally:
-        seconds = perf_counter() - started
-        stage_duration.labels(stage=stage, outcome=outcome).observe(seconds)
-        log_event(
-            "workflow.stage",
-            stage=stage,
-            workflow_id=str(workflow_id),
-            outcome=outcome,
-            duration_ms=round(seconds * 1000, 2),
-        )
+    with trace_span(f"workflow.{stage}", attributes={"axon.workflow_id": str(workflow_id)}):
+        started = perf_counter()
+        outcome = "ok"
+        try:
+            yield
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            seconds = perf_counter() - started
+            stage_duration.labels(stage=stage, outcome=outcome).observe(seconds)
+            log_event(
+                "workflow.stage",
+                stage=stage,
+                workflow_id=str(workflow_id),
+                outcome=outcome,
+                duration_ms=round(seconds * 1000, 2),
+            )

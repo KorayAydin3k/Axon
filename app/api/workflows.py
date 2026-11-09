@@ -13,12 +13,12 @@ from app.engine.workflow_engine import (
     PlanSelection,
     WorkflowNotFound,
     WorkflowRunConflict,
+    WorkflowToolFailed,
     execute_workflow,
 )
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
 from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
-from app.tools.registry import RetryableToolError
 from app.validation.plan import WorkflowPlan
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -87,10 +87,8 @@ def run_workflow(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except WorkflowRunConflict as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
-    except RetryableToolError as error:
-        raise HTTPException(
-            status_code=503, detail="A tool failed temporarily. Retry this workflow."
-        ) from error
+    except WorkflowToolFailed as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
     return WorkflowResponse.model_validate(workflow)
 
 

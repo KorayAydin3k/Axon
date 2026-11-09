@@ -63,3 +63,7 @@ SUPPORT_TOOLS: dict[str, Tool] = {
 
 class RetryableToolError(RuntimeError):
     pass
+
+
+class PermanentToolError(RuntimeError):
+    pass

@@ -1,13 +1,21 @@
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from graphlib import TopologicalSorter
+from time import sleep
 from typing import Literal
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus, transition
 from app.persistence.models import Workflow, WorkflowEvent, WorkflowStep
-from app.tools.registry import SUPPORT_TOOLS, ToolOutput
+from app.tools.registry import (
+    PermanentToolError,
+    RetryableToolError,
+    SUPPORT_TOOLS,
+    ToolOutput,
+)
 from app.validation.plan import PlanModel, PlanStep, WorkflowPlan
 
 
@@ -100,6 +108,19 @@ class WorkflowRunConflict(ValueError):
     pass
 
 
+class WorkflowToolFailed(RuntimeError):
+    pass
+
+
+_RETRY_DELAYS = (1, 2, 4)
+
+
+class RetrySchedule(PlanModel):
+    step: str
+    failure_count: int
+    retry_at: datetime
+
+
 class ExecutionSnapshot(PlanModel):
     selection: PlanSelection
     plan: WorkflowPlan
@@ -135,6 +156,100 @@ def _select_plan(
     )
 
 
+def _execute_step(
+    session: Session,
+    workflow_id: UUID,
+    step: PlanStep,
+    position: int,
+    inputs: list[ToolOutput],
+) -> ToolOutput:
+    while True:
+        wait_seconds = 0.0
+        terminal_failure = False
+
+        with session.begin():
+            workflow = _locked_workflow(session, workflow_id)
+            saved = session.get(WorkflowStep, (workflow_id, step.name))
+            if saved is not None:
+                return saved.output
+
+            if workflow.status not in (WorkflowStatus.RUNNING, WorkflowStatus.RETRYING):
+                raise WorkflowRunConflict(f"Workflow is already {workflow.status}")
+
+            failure_count = 0
+            if workflow.status == WorkflowStatus.RETRYING:
+                event = session.scalar(
+                    select(WorkflowEvent)
+                    .where(
+                        WorkflowEvent.workflow_id == workflow_id,
+                        WorkflowEvent.to_status == WorkflowStatus.RETRYING,
+                    )
+                    .order_by(WorkflowEvent.id.desc())
+                    .limit(1)
+                )
+                if event is None:
+                    raise WorkflowRunConflict("Retry schedule is missing")
+                schedule = RetrySchedule.model_validate(event.details)
+                if schedule.step != step.name:
+                    raise WorkflowRunConflict("Retry schedule belongs to a different step")
+
+                failure_count = schedule.failure_count
+                wait_seconds = max(
+                    0.0, (schedule.retry_at - datetime.now(UTC)).total_seconds()
+                )
+                if wait_seconds == 0:
+                    _change_status(
+                        session, workflow, WorkflowStatus.RUNNING, {"step": step.name}
+                    )
+
+            if wait_seconds == 0:
+                try:
+                    with session.begin_nested():
+                        output = SUPPORT_TOOLS[step.tool](
+                            session, workflow_id, inputs, step.arguments.model_dump()
+                        )
+                        session.add(
+                            WorkflowStep(
+                                workflow_id=workflow_id,
+                                name=step.name,
+                                tool=step.tool,
+                                position=position,
+                                output=output,
+                            )
+                        )
+                except (RetryableToolError, TimeoutError, PermanentToolError) as error:
+                    failure_count += 1
+                    retryable = isinstance(error, (RetryableToolError, TimeoutError))
+                    if retryable and failure_count <= len(_RETRY_DELAYS):
+                        wait_seconds = _RETRY_DELAYS[failure_count - 1]
+                        schedule = RetrySchedule(
+                            step=step.name,
+                            failure_count=failure_count,
+                            retry_at=datetime.now(UTC) + timedelta(seconds=wait_seconds),
+                        )
+                        _change_status(
+                            session, workflow, WorkflowStatus.RETRYING,
+                            schedule.model_dump(mode="json"),
+                        )
+                    else:
+                        terminal_failure = True
+                        _change_status(
+                            session, workflow, WorkflowStatus.FAILED,
+                            {
+                                "step": step.name,
+                                "failure_count": failure_count,
+                                "reason": "retry_exhausted" if retryable else "permanent",
+                            },
+                        )
+                else:
+                    return output
+
+        if terminal_failure:
+            raise WorkflowToolFailed(f"Workflow failed at step '{step.name}'")
+        if wait_seconds > 0:
+            sleep(wait_seconds)
+
+
 def execute_workflow(
     session: Session, workflow_id: UUID, selection: PlanSelection | None = None
 ) -> Workflow:
@@ -143,7 +258,10 @@ def execute_workflow(
         starting = workflow.status == WorkflowStatus.PENDING
         if starting:
             snapshot = _select_plan(workflow, selection)
-        elif workflow.status == WorkflowStatus.RUNNING and workflow.execution_plan is not None:
+        elif (
+            workflow.status in (WorkflowStatus.RUNNING, WorkflowStatus.RETRYING)
+            and workflow.execution_plan is not None
+        ):
             snapshot = ExecutionSnapshot.model_validate(workflow.execution_plan)
             if selection is not None and selection != snapshot.selection:
                 raise WorkflowRunConflict("Resume with the original plan")
@@ -157,30 +275,8 @@ def execute_workflow(
 
     outputs: dict[str, ToolOutput] = {}
     for position, step in enumerate(steps, start=1):
-        with session.begin():
-            workflow = _locked_workflow(session, workflow_id)
-            saved = session.get(WorkflowStep, (workflow_id, step.name))
-            if saved is not None:
-                outputs[step.name] = saved.output
-                continue
-
-            if workflow.status != WorkflowStatus.RUNNING:
-                raise WorkflowRunConflict(f"Workflow is already {workflow.status}")
-
-            inputs = [outputs[name] for name in step.depends_on]
-            output = SUPPORT_TOOLS[step.tool](
-                session, workflow_id, inputs, step.arguments.model_dump()
-            )
-            session.add(
-                WorkflowStep(
-                    workflow_id=workflow_id,
-                    name=step.name,
-                    tool=step.tool,
-                    position=position,
-                    output=output,
-                )
-            )
-            outputs[step.name] = output
+        inputs = [outputs[name] for name in step.depends_on]
+        outputs[step.name] = _execute_step(session, workflow_id, step, position, inputs)
 
     with session.begin():
         workflow = _locked_workflow(session, workflow_id)

@@ -18,7 +18,9 @@ from app.tools.registry import (
     SUPPORT_TOOLS,
     ToolOutput,
 )
-from app.validation.plan import PlanModel, PlanStep, WorkflowPlan
+from app.validation.plan import (
+    PlanModel, PlanStep, SupportAction, WorkflowPlan, build_support_plan,
+)
 from app.validation.policy import ToolDecision, require_tool_permission
 
 
@@ -27,29 +29,9 @@ class SupportPlan(StrEnum):
     SUPPORT_FOLLOWUP = "support_followup"
 
 
-_FIND_TICKETS = {
-    "name": "find_tickets",
-    "tool": "list_tickets",
-    "depends_on": [],
-    "arguments": {"limit": 3},
-}
-_PLANS = {
-    SupportPlan.TICKET_LIST: (_FIND_TICKETS,),
-    SupportPlan.SUPPORT_FOLLOWUP: (
-        _FIND_TICKETS,
-        {
-            "name": "summarize_tickets",
-            "tool": "summarize_tickets",
-            "depends_on": ["find_tickets"],
-            "arguments": {},
-        },
-        {
-            "name": "create_tasks",
-            "tool": "create_followup_tasks",
-            "depends_on": ["summarize_tickets"],
-            "arguments": {},
-        },
-    ),
+_DEMO_ACTIONS = {
+    SupportPlan.TICKET_LIST: SupportAction.LIST,
+    SupportPlan.SUPPORT_FOLLOWUP: SupportAction.FOLLOWUP,
 }
 _REQUIRED_INPUTS = {
     "list_tickets": (),
@@ -156,7 +138,7 @@ def _select_plan(
     demo = selection or SupportPlan.TICKET_LIST
     return ExecutionSnapshot(
         selection=demo,
-        plan=WorkflowPlan.model_validate({"steps": _PLANS[demo]}),
+        plan=build_support_plan(_DEMO_ACTIONS[demo], limit=3),
     )
 
 

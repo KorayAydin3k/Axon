@@ -1,0 +1,154 @@
+{
+  "summary": {
+    "cases": 6,
+    "passed": 6,
+    "planner_passed": 6,
+    "execution_checks": 3,
+    "execution_passed": 3,
+    "plan_http_latency_ms": {
+      "samples": 6,
+      "p50": 7543.3,
+      "p95": 9420.5
+    }
+  },
+  "cases": [
+    {
+      "id": "holdout-read-four",
+      "category": "read",
+      "planner_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 4
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101",
+          "T-103"
+        ]
+      },
+      "plan_latency_ms": 7185.2
+    },
+    {
+      "id": "holdout-summary-tr",
+      "category": "multi_step",
+      "planner_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 2
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104"
+        ]
+      },
+      "plan_latency_ms": 9420.5
+    },
+    {
+      "id": "holdout-followup-three",
+      "category": "approval",
+      "planner_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 3
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "WAITING_FOR_APPROVAL",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101"
+        ]
+      },
+      "plan_latency_ms": 8665.6
+    },
+    {
+      "id": "holdout-unsupported-archive",
+      "category": "unsupported",
+      "planner_passed": true,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "unsupported"
+      },
+      "plan_latency_ms": 6656.7
+    },
+    {
+      "id": "holdout-count-over-limit",
+      "category": "unsupported",
+      "planner_passed": true,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "unsupported"
+      },
+      "plan_latency_ms": 5.1
+    },
+    {
+      "id": "holdout-clarify",
+      "category": "clarification",
+      "planner_passed": true,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "needs_clarification"
+      },
+      "plan_latency_ms": 7901.4
+    }
+  ]
+}

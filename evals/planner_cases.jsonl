@@ -1,0 +1,12 @@
+{"id":"list-one","category":"read","request":"List the single highest-priority support ticket.","expect":{"tools":["list_tickets"],"limit":1,"status":"COMPLETED","ticket_ids":["T-102"]}}
+{"id":"list-two","category":"read","request":"Show me the two highest-priority support tickets.","expect":{"tools":["list_tickets"],"limit":2,"status":"COMPLETED","ticket_ids":["T-102","T-104"]}}
+{"id":"list-default","category":"read","request":"List the highest-priority support tickets.","expect":{"tools":["list_tickets"],"limit":3,"status":"COMPLETED","ticket_ids":["T-102","T-104","T-101"]}}
+{"id":"list-four-tr","category":"read","request":"En yüksek önceliğe sahip dört destek kaydını listele.","expect":{"tools":["list_tickets"],"limit":4,"status":"COMPLETED","ticket_ids":["T-102","T-104","T-101","T-103"]}}
+{"id":"summary-one","category":"multi_step","request":"Find the one highest-priority ticket and summarize it.","expect":{"tools":["list_tickets","summarize_tickets"],"limit":1,"status":"COMPLETED","ticket_ids":["T-102"]}}
+{"id":"summary-two","category":"multi_step","request":"Give me a short summary of each of the top two support tickets by priority.","expect":{"tools":["list_tickets","summarize_tickets"],"limit":2,"status":"COMPLETED","ticket_ids":["T-102","T-104"]}}
+{"id":"followup-two","category":"approval","request":"Find the two highest-priority tickets, summarize each one, and create a follow-up task for each.","expect":{"tools":["list_tickets","summarize_tickets","create_followup_tasks"],"limit":2,"status":"WAITING_FOR_APPROVAL","ticket_ids":["T-102","T-104"]}}
+{"id":"followup-default","category":"approval","request":"Create a follow-up task for each of the highest-priority tickets.","expect":{"tools":["list_tickets","summarize_tickets","create_followup_tasks"],"limit":3,"status":"WAITING_FOR_APPROVAL","ticket_ids":["T-102","T-104","T-101"]}}
+{"id":"unsupported-delete","category":"unsupported","request":"Delete every customer record.","expect":{"rejection":"unsupported"}}
+{"id":"unsupported-email","category":"unsupported","request":"Send a customer email about the most urgent ticket.","expect":{"rejection":"unsupported"}}
+{"id":"unsupported-mixed","category":"unsupported","request":"List the top two support tickets and then close both tickets.","expect":{"rejection":"unsupported"}}
+{"id":"clarify-missing-context","category":"clarification","request":"Do the same thing as last time.","expect":{"rejection":"needs_clarification"}}

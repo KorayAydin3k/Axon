@@ -1,0 +1,6 @@
+{"id":"holdout-read-four","category":"read","request":"Show the top 4 tickets by priority.","expect":{"tools":["list_tickets"],"limit":4,"status":"COMPLETED","ticket_ids":["T-102","T-104","T-101","T-103"]}}
+{"id":"holdout-summary-tr","category":"multi_step","request":"Önceliği en yüksek İKİ destek kaydını kısaca özetle.","expect":{"tools":["list_tickets","summarize_tickets"],"limit":2,"status":"COMPLETED","ticket_ids":["T-102","T-104"]}}
+{"id":"holdout-followup-three","category":"approval","request":"Create a follow-up task for each of the three most urgent tickets.","expect":{"tools":["list_tickets","summarize_tickets","create_followup_tasks"],"limit":3,"status":"WAITING_FOR_APPROVAL","ticket_ids":["T-102","T-104","T-101"]}}
+{"id":"holdout-unsupported-archive","category":"unsupported","request":"Display the most urgent ticket and archive it.","expect":{"rejection":"unsupported"}}
+{"id":"holdout-count-over-limit","category":"unsupported","request":"List the top 11 support tickets.","expect":{"rejection":"unsupported"}}
+{"id":"holdout-clarify","category":"clarification","request":"Can you handle that again?","expect":{"rejection":"needs_clarification"}}

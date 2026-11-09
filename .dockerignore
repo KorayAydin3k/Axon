@@ -9,3 +9,10 @@
 **/*.py[cod]
 **/.env
 **/.env.*
+!dashboard/
+!dashboard/package.json
+!dashboard/package-lock.json
+!dashboard/index.html
+!dashboard/tsconfig.json
+!dashboard/src/
+!dashboard/src/**

@@ -1,4 +1,5 @@
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from time import perf_counter
 from uuid import uuid4
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from opentelemetry.trace import SpanKind, StatusCode
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -102,3 +104,7 @@ def metrics() -> Response:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+dashboard_dist = Path(__file__).resolve().parents[1] / "dashboard" / "dist"
+if dashboard_dist.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=dashboard_dist, html=True), name="dashboard")

@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from graphlib import TopologicalSorter
+from hashlib import sha256
+from json import dumps
 from time import sleep
 from typing import Literal
 from uuid import UUID
@@ -9,8 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus, transition
-from app.persistence.models import Workflow, WorkflowEvent, WorkflowStep
+from app.persistence.models import Workflow, WorkflowApproval, WorkflowEvent, WorkflowStep
 from app.tools.registry import (
+    APPROVAL_REQUIRED_TOOLS,
     PermanentToolError,
     RetryableToolError,
     SUPPORT_TOOLS,
@@ -156,13 +159,92 @@ def _select_plan(
     )
 
 
+ApprovalDecision = Literal["approved", "rejected"]
+
+
+def plan_fingerprint(plan: object) -> str:
+    canonical = dumps(plan, sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _check_plan_fingerprint(workflow: Workflow, plan_hash: str) -> None:
+    snapshot = workflow.execution_plan
+    if snapshot is None or plan_fingerprint(snapshot["plan"]) != plan_hash:
+        raise WorkflowRunConflict("Approval does not match the current execution plan")
+
+
+def _approval_granted(
+    session: Session,
+    workflow: Workflow,
+    step: PlanStep,
+    inputs: list[ToolOutput],
+    plan_hash: str,
+) -> bool:
+    _check_plan_fingerprint(workflow, plan_hash)
+    approval = session.get(WorkflowApproval, (workflow.id, plan_hash))
+    if approval is not None:
+        return approval.decision == "approved"
+
+    if workflow.status != WorkflowStatus.RUNNING:
+        raise WorkflowRunConflict("Approval request does not match the current plan")
+
+    (summaries,) = inputs
+    ticket_ids = [item["ticket_id"] for item in summaries]
+    session.add(
+        WorkflowApproval(
+            workflow_id=workflow.id,
+            plan_hash=plan_hash,
+            step_name=step.name,
+        )
+    )
+    _change_status(
+        session, workflow, WorkflowStatus.WAITING_FOR_APPROVAL,
+        {
+            "plan_hash": plan_hash,
+            "step": step.name,
+            "tool": step.tool,
+            "ticket_ids": ticket_ids,
+            "task_count": len(ticket_ids),
+        },
+    )
+    return False
+
+
+def decide_approval(
+    session: Session,
+    workflow_id: UUID,
+    plan_hash: str,
+    decision: ApprovalDecision,
+) -> Workflow:
+    with session.begin():
+        workflow = _locked_workflow(session, workflow_id)
+        _check_plan_fingerprint(workflow, plan_hash)
+        approval = session.get(WorkflowApproval, (workflow_id, plan_hash))
+        if approval is None:
+            raise WorkflowRunConflict("No approval request exists for this plan")
+        if approval.decision == decision:
+            return workflow
+        if approval.decision is not None or workflow.status != WorkflowStatus.WAITING_FOR_APPROVAL:
+            raise WorkflowRunConflict("Approval is no longer pending")
+
+        approval.decision = decision
+        approval.decided_at = datetime.now(UTC)
+        target = WorkflowStatus.RUNNING if decision == "approved" else WorkflowStatus.CANCELLED
+        _change_status(
+            session, workflow, target,
+            {"plan_hash": plan_hash, "step": approval.step_name, "decision": decision},
+        )
+        return workflow
+
+
 def _execute_step(
     session: Session,
     workflow_id: UUID,
     step: PlanStep,
     position: int,
     inputs: list[ToolOutput],
-) -> ToolOutput:
+    plan_hash: str,
+) -> ToolOutput | None:
     while True:
         wait_seconds = 0.0
         terminal_failure = False
@@ -173,8 +255,18 @@ def _execute_step(
             if saved is not None:
                 return saved.output
 
-            if workflow.status not in (WorkflowStatus.RUNNING, WorkflowStatus.RETRYING):
+            if workflow.status not in (
+                WorkflowStatus.RUNNING,
+                WorkflowStatus.RETRYING,
+                WorkflowStatus.WAITING_FOR_APPROVAL,
+            ):
                 raise WorkflowRunConflict(f"Workflow is already {workflow.status}")
+
+            if step.tool in APPROVAL_REQUIRED_TOOLS:
+                if not _approval_granted(session, workflow, step, inputs, plan_hash):
+                    return None
+            if workflow.status == WorkflowStatus.WAITING_FOR_APPROVAL:
+                raise WorkflowRunConflict("Workflow is waiting for approval")
 
             failure_count = 0
             if workflow.status == WorkflowStatus.RETRYING:
@@ -259,7 +351,11 @@ def execute_workflow(
         if starting:
             snapshot = _select_plan(workflow, selection)
         elif (
-            workflow.status in (WorkflowStatus.RUNNING, WorkflowStatus.RETRYING)
+            workflow.status in (
+                WorkflowStatus.RUNNING,
+                WorkflowStatus.RETRYING,
+                WorkflowStatus.WAITING_FOR_APPROVAL,
+            )
             and workflow.execution_plan is not None
         ):
             snapshot = ExecutionSnapshot.model_validate(workflow.execution_plan)
@@ -273,10 +369,14 @@ def execute_workflow(
             workflow.execution_plan = snapshot.model_dump(mode="json")
             _change_status(session, workflow, WorkflowStatus.RUNNING, {})
 
+    plan_hash = plan_fingerprint(snapshot.plan.model_dump(mode="json"))
     outputs: dict[str, ToolOutput] = {}
     for position, step in enumerate(steps, start=1):
         inputs = [outputs[name] for name in step.depends_on]
-        outputs[step.name] = _execute_step(session, workflow_id, step, position, inputs)
+        output = _execute_step(session, workflow_id, step, position, inputs, plan_hash)
+        if output is None:
+            return workflow
+        outputs[step.name] = output
 
     with session.begin():
         workflow = _locked_workflow(session, workflow_id)

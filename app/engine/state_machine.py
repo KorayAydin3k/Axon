@@ -4,9 +4,11 @@ from enum import StrEnum
 class WorkflowStatus(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
+    WAITING_FOR_APPROVAL = "WAITING_FOR_APPROVAL"
     RETRYING = "RETRYING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class InvalidWorkflowTransition(ValueError):
@@ -16,11 +18,16 @@ class InvalidWorkflowTransition(ValueError):
 _ALLOWED_TRANSITIONS = {
     WorkflowStatus.PENDING: {WorkflowStatus.RUNNING},
     WorkflowStatus.RUNNING: {
-        WorkflowStatus.RETRYING, WorkflowStatus.COMPLETED, WorkflowStatus.FAILED,
+        WorkflowStatus.RETRYING, WorkflowStatus.WAITING_FOR_APPROVAL,
+        WorkflowStatus.COMPLETED, WorkflowStatus.FAILED,
     },
     WorkflowStatus.RETRYING: {WorkflowStatus.RUNNING},
     WorkflowStatus.COMPLETED: set(),
     WorkflowStatus.FAILED: set(),
+    WorkflowStatus.CANCELLED: set(),
+    WorkflowStatus.WAITING_FOR_APPROVAL: {
+        WorkflowStatus.RUNNING, WorkflowStatus.CANCELLED,
+    },
 }
 
 

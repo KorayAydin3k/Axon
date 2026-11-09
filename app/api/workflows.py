@@ -1,5 +1,7 @@
 from collections.abc import Iterator
 from datetime import datetime
+from os import getenv
+from secrets import compare_digest
 from typing import Annotated
 from uuid import UUID
 
@@ -11,10 +13,12 @@ from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus
 from app.engine.workflow_engine import (
+    ApprovalDecision,
     PlanSelection,
     WorkflowNotFound,
     WorkflowRunConflict,
     WorkflowToolFailed,
+    decide_approval,
     execute_workflow,
 )
 from app.persistence.database import engine
@@ -184,3 +188,55 @@ def preview_workflow_plan(
         workflow.generated_plan = candidate.model_dump(mode="json")
 
     return candidate
+
+
+class ApprovalRequest(BaseModel):
+    plan_hash: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+def require_approval_token(
+    token: Annotated[str | None, Header(alias="X-Axon-Approval-Token")] = None,
+) -> None:
+    expected = getenv("AXON_APPROVAL_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Approval is not configured")
+    if token is None or not compare_digest(token.encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="Approval access denied")
+
+
+def _approval_response(
+    session: Session, workflow_id: UUID, plan_hash: str, decision: ApprovalDecision
+) -> WorkflowResponse:
+    try:
+        workflow = decide_approval(session, workflow_id, plan_hash, decision)
+    except WorkflowNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except WorkflowRunConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return WorkflowResponse.model_validate(workflow)
+
+
+@router.post(
+    "/{workflow_id}/approve",
+    response_model=WorkflowResponse,
+    dependencies=[Depends(require_approval_token)],
+)
+def approve_workflow(
+    workflow_id: UUID,
+    payload: ApprovalRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> WorkflowResponse:
+    return _approval_response(session, workflow_id, payload.plan_hash, "approved")
+
+
+@router.post(
+    "/{workflow_id}/reject",
+    response_model=WorkflowResponse,
+    dependencies=[Depends(require_approval_token)],
+)
+def reject_workflow(
+    workflow_id: UUID,
+    payload: ApprovalRequest,
+    session: Annotated[Session, Depends(get_session)],
+) -> WorkflowResponse:
+    return _approval_response(session, workflow_id, payload.plan_hash, "rejected")

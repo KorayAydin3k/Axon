@@ -64,3 +64,15 @@ class FollowupTask(Base):
     )
     ticket_id: Mapped[str] = mapped_column(String(32), primary_key=True)
     summary: Mapped[str] = mapped_column(Text)
+
+
+class WorkflowApproval(Base):
+    __tablename__ = "workflow_approvals"
+
+    workflow_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), primary_key=True
+    )
+    plan_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    step_name: Mapped[str] = mapped_column(String(64))
+    decision: Mapped[str | None] = mapped_column(String(16))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

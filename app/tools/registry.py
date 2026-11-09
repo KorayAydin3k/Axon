@@ -67,3 +67,6 @@ class RetryableToolError(RuntimeError):
 
 class PermanentToolError(RuntimeError):
     pass
+
+
+APPROVAL_REQUIRED_TOOLS = frozenset({"create_followup_tasks"})

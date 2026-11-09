@@ -21,7 +21,9 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.engine.workflow_engine import SupportPlan, execute_workflow
+from app.engine.workflow_engine import (
+    SupportPlan, decide_approval, execute_workflow, plan_fingerprint,
+)
 from app.persistence.database import engine
 from app.tools.registry import SUPPORT_TOOLS
 
@@ -34,10 +36,18 @@ def crash_after_write(session, workflow_id, inputs, arguments):
     os._exit(int(sys.argv[2]))
 
 
-SUPPORT_TOOLS["create_followup_tasks"] = crash_after_write
+workflow_id = UUID(sys.argv[1])
+with Session(engine) as session:
+    workflow = execute_workflow(session, workflow_id, SupportPlan.SUPPORT_FOLLOWUP)
+    assert workflow.status == "WAITING_FOR_APPROVAL"
+    plan_hash = plan_fingerprint(workflow.execution_plan["plan"])
 
 with Session(engine) as session:
-    execute_workflow(session, UUID(sys.argv[1]), SupportPlan.SUPPORT_FOLLOWUP)
+    decide_approval(session, workflow_id, plan_hash, "approved")
+
+SUPPORT_TOOLS["create_followup_tasks"] = crash_after_write
+with Session(engine) as session:
+    execute_workflow(session, workflow_id)
 """
 
 

@@ -1,7 +1,6 @@
 from collections.abc import Iterator
 from datetime import datetime
-from json import dumps
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,11 +8,17 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.engine.state_machine import InvalidWorkflowTransition, WorkflowStatus
-from app.engine.workflow_engine import SupportPlan, run_plan, run_support_demo
+from app.engine.state_machine import WorkflowStatus
+from app.engine.workflow_engine import (
+    PlanSelection,
+    WorkflowNotFound,
+    WorkflowRunConflict,
+    execute_workflow,
+)
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
 from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
+from app.tools.registry import RetryableToolError
 from app.validation.plan import WorkflowPlan
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -74,32 +79,19 @@ class WorkflowEventResponse(BaseModel):
 def run_workflow(
     workflow_id: UUID,
     session: Annotated[Session, Depends(get_session)],
-    plan: SupportPlan | Literal["generated"] | None = None,
+    plan: PlanSelection | None = None,
 ) -> WorkflowResponse:
-    with session.begin():
-        workflow = session.get(Workflow, workflow_id, with_for_update=True)
-        if workflow is None:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-
-        try:
-            if workflow.generated_plan is not None:
-                if plan not in (None, "generated"):
-                    raise HTTPException(
-                        status_code=409, detail="Workflow already has a generated plan"
-                    )
-                run_plan(session, workflow, dumps(workflow.generated_plan))
-            elif plan == "generated":
-                raise HTTPException(status_code=409, detail="Generate a plan first")
-            else:
-                run_support_demo(session, workflow, plan or SupportPlan.TICKET_LIST)
-        except InvalidWorkflowTransition as error:
-            raise HTTPException(
-                status_code=409, detail=f"Workflow is already {workflow.status}"
-            ) from error
-
-        result = WorkflowResponse.model_validate(workflow)
-
-    return result
+    try:
+        workflow = execute_workflow(session, workflow_id, plan)
+    except WorkflowNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except WorkflowRunConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RetryableToolError as error:
+        raise HTTPException(
+            status_code=503, detail="A tool failed temporarily. Retry this workflow."
+        ) from error
+    return WorkflowResponse.model_validate(workflow)
 
 
 @router.get("/{workflow_id}/events", response_model=list[WorkflowEventResponse])

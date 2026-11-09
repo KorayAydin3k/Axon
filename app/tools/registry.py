@@ -59,3 +59,7 @@ SUPPORT_TOOLS: dict[str, Tool] = {
     "summarize_tickets": _summarize_tickets,
     "create_followup_tasks": _create_followup_tasks,
 }
+
+
+class RetryableToolError(RuntimeError):
+    pass

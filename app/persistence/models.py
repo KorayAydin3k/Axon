@@ -17,6 +17,9 @@ class Workflow(Base):
     generated_plan: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )
+    execution_plan: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     status: Mapped[str] = mapped_column(String(32), server_default="PENDING")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

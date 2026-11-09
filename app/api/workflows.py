@@ -21,6 +21,7 @@ from app.engine.workflow_engine import (
     decide_approval,
     execute_workflow,
 )
+from app.observability.telemetry import observe_stage
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
 from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
@@ -129,7 +130,8 @@ def run_workflow(
     plan: PlanSelection | None = None,
 ) -> WorkflowResponse:
     try:
-        workflow = execute_workflow(session, workflow_id, plan)
+        with observe_stage("execution", workflow_id):
+            workflow = execute_workflow(session, workflow_id, plan)
     except WorkflowNotFound as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except WorkflowRunConflict as error:
@@ -173,7 +175,8 @@ def preview_workflow_plan(
         request_text = workflow.request
 
     try:
-        candidate = generate_plan(request_text)
+        with observe_stage("planning", workflow_id):
+            candidate = generate_plan(request_text)
     except PlannerRejected as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except PlannerError as error:

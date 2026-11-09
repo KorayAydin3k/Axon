@@ -13,13 +13,13 @@ from sqlalchemy.orm import Session
 from app.engine.state_machine import WorkflowStatus, transition
 from app.persistence.models import Workflow, WorkflowApproval, WorkflowEvent, WorkflowStep
 from app.tools.registry import (
-    APPROVAL_REQUIRED_TOOLS,
     PermanentToolError,
     RetryableToolError,
     SUPPORT_TOOLS,
     ToolOutput,
 )
 from app.validation.plan import PlanModel, PlanStep, WorkflowPlan
+from app.validation.policy import ToolDecision, require_tool_permission
 
 
 class SupportPlan(StrEnum):
@@ -66,6 +66,7 @@ def execution_order(steps: tuple[PlanStep, ...]) -> list[PlanStep]:
         raise ValueError("A tool may appear only once in a support plan")
 
     for step in steps:
+        require_tool_permission(step.tool)
         if step.tool not in SUPPORT_TOOLS:
             raise ValueError(f"Unregistered tool: {step.tool}")
         missing = set(step.depends_on) - by_name.keys()
@@ -262,7 +263,8 @@ def _execute_step(
             ):
                 raise WorkflowRunConflict(f"Workflow is already {workflow.status}")
 
-            if step.tool in APPROVAL_REQUIRED_TOOLS:
+            decision = require_tool_permission(step.tool)
+            if decision is ToolDecision.REQUIRE_APPROVAL:
                 if not _approval_granted(session, workflow, step, inputs, plan_hash):
                     return None
             if workflow.status == WorkflowStatus.WAITING_FOR_APPROVAL:

@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.engine.workflow_engine import execution_order
 from app.validation.plan import PlanModel, WorkflowPlan
+from app.validation.policy import ToolPolicyViolation
 
 
 class PlannerError(RuntimeError):
@@ -89,6 +90,8 @@ def generate_plan(user_request: str) -> WorkflowPlan:
 
     try:
         ordered_steps = execution_order(result.plan.steps)
+    except ToolPolicyViolation as error:
+        raise PlannerRejected("tool_denied") from error
     except ValueError as error:
         raise PlannerError("Ollama plan failed dependency validation") from error
 

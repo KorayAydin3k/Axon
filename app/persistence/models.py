@@ -14,6 +14,9 @@ class Workflow(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     request: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), unique=True, index=True
+    )
     generated_plan: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )

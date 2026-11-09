@@ -3,9 +3,10 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus
@@ -44,15 +45,56 @@ def get_session() -> Iterator[Session]:
         yield session
 
 
-@router.post("", response_model=WorkflowResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=WorkflowResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        200: {"model": WorkflowResponse, "description": "Existing workflow for this key"},
+        409: {"description": "Key already used for a different request"},
+    },
+)
 def create_workflow(
-    payload: WorkflowCreate, session: Annotated[Session, Depends(get_session)]
-) -> Workflow:
-    workflow = Workflow(request=payload.request)
-    session.add(workflow)
-    session.commit()
-    session.refresh(workflow)
-    return workflow
+    payload: WorkflowCreate,
+    response: Response,
+    session: Annotated[Session, Depends(get_session)],
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9._:-]+$",
+        ),
+    ] = None,
+) -> WorkflowResponse:
+    with session.begin():
+        if idempotency_key is None:
+            workflow = Workflow(request=payload.request)
+            session.add(workflow)
+            session.flush()
+        else:
+            statement = (
+                insert(Workflow)
+                .values(request=payload.request, idempotency_key=idempotency_key)
+                .on_conflict_do_nothing(index_elements=[Workflow.idempotency_key])
+                .returning(Workflow)
+            )
+            workflow = session.scalar(statement)
+            if workflow is None:
+                workflow = session.scalars(
+                    select(Workflow).where(Workflow.idempotency_key == idempotency_key)
+                ).one()
+                if workflow.request != payload.request:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Idempotency-Key was already used for a different request",
+                    )
+                response.status_code = status.HTTP_200_OK
+
+        result = WorkflowResponse.model_validate(workflow)
+
+    return result
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)

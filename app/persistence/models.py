@@ -20,6 +20,9 @@ class Workflow(Base):
     generated_plan: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )
+    plan_job: Mapped[dict[str, object] | None] = mapped_column(
+        JSON(none_as_null=True)
+    )
     execution_plan: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )

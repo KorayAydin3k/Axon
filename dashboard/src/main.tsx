@@ -10,6 +10,12 @@ type Step = {
   arguments: { limit?: number };
 };
 type Plan = { steps: Step[] };
+type PlanJob = {
+  status: "idle" | "planning" | "ready" | "failed";
+  plan: Plan | null;
+  duration_ms: number | null;
+  error: string | null;
+};
 type WorkflowEvent = {
   id: number;
   from_status: string;
@@ -21,19 +27,21 @@ type WorkflowEvent = {
 const exampleRequest =
   "Find the two highest-priority tickets, summarize each one, and create a follow-up task for each.";
 
-async function api<T>(path: string, options?: RequestInit): Promise<T> {
+async function api<T>(
+  path: string, options?: RequestInit, onResponse?: (response: Response) => void,
+): Promise<T> {
   const response = await fetch(path, options);
   let body: unknown;
   try {
     body = await response.json();
   } catch {
-    const message = response.ok ? "Axon returned an invalid response" : "Axon request failed";
-    throw new Error(`${message} (HTTP ${response.status})`);
+    throw new Error(`Axon request failed or returned invalid JSON (HTTP ${response.status})`);
   }
   if (!response.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? body.detail : undefined;
     throw new Error(typeof detail === "string" ? detail : `Axon request failed (HTTP ${response.status})`);
   }
+  onResponse?.(response);
   return body as T;
 }
 
@@ -63,12 +71,23 @@ function App() {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [planningMs, setPlanningMs] = useState<number | null>(null);
+  const [executionMs, setExecutionMs] = useState<number | null>(null);
   const creation = useRef<{ text: string; key: string } | null>(null);
 
   const path = workflow ? `/workflows/${workflow.id}` : "";
   const waiting = workflow?.status === "WAITING_FOR_APPROVAL";
   const approval = waiting ? events.find((event) => event.to_status === "WAITING_FOR_APPROVAL") : undefined;
   const digest = approval?.details.plan_hash;
+  const completed = events.find((event) => event.to_status === "COMPLETED");
+  const tasks = completed?.details.followup_tasks;
+  const resultTasks = Array.isArray(tasks) ? tasks.filter(
+    (task): task is { ticket_id: string; summary: string } =>
+      task !== null && typeof task === "object"
+      && typeof task.ticket_id === "string" && typeof task.summary === "string",
+  ) : [];
+  const durationText = (ms: number | null) =>
+    ms === null ? "—" : ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toFixed(2)} s`;
   const canRun = workflow && plan && ["PENDING", "RUNNING", "RETRYING"].includes(workflow.status);
 
   async function perform(label: string, action: () => Promise<void>) {
@@ -96,6 +115,8 @@ function App() {
     setPlan(null);
     setEvents([]);
     setToken("");
+    setPlanningMs(null);
+    setExecutionMs(null);
   }
 
   async function refresh() {
@@ -107,8 +128,31 @@ function App() {
     setEvents(history);
   }
 
+  async function previewPlan() {
+    const jobPath = path + "/plan-job";
+    let job = await post<PlanJob>(jobPath, {});
+    const deadline = Date.now() + 220_000;
+
+    while (job.status === "planning" && Date.now() < deadline) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 2500));
+      job = await api<PlanJob>(jobPath, { cache: "no-store" });
+    }
+    if (job.status !== "ready" || job.plan === null) {
+      throw new Error(job.error ?? "Planning did not complete. Try Preview plan again.");
+    }
+
+    setPlan(job.plan);
+    if (job.duration_ms !== null) setPlanningMs(job.duration_ms);
+  }
+
   async function run() {
-    setWorkflow(await post<Workflow>(path + "/run?plan=generated"));
+    const next = await api<Workflow>(path + "/run?plan=generated", { method: "POST" }, (response) => {
+      const duration = response.headers.get("Server-Timing")?.match(/(?:^|,\s*)execution;dur=(\d+(?:\.\d+)?)(?:[;,]|$)/)?.[1];
+      if (duration !== undefined) {
+        setExecutionMs((previous) => (previous ?? 0) + Number(duration));
+      }
+    });
+    setWorkflow(next);
     setEvents(await api<WorkflowEvent[]>(path + "/events"));
   }
 
@@ -149,9 +193,7 @@ function App() {
             <h2>Review the plan</h2>
             <div className="actions">
               <button disabled={!!busy || !workflow || (workflow.status !== "PENDING" && !plan)}
-                onClick={() => void perform("Generating plan…", async () => {
-                  setPlan(await post<Plan>(path + "/plan"));
-                })}>Preview plan</button>
+                onClick={() => void perform("Generating plan…", previewPlan)}>Preview plan</button>
               <button className="primary" disabled={!!busy || !canRun}
                 onClick={() => void perform("Running workflow…", run)}>
                 {workflow?.status === "RUNNING" || workflow?.status === "RETRYING" ? "Resume workflow" : "Run workflow"}
@@ -190,6 +232,23 @@ function App() {
               </div>
             </section>
           )}
+
+          <section className="panel">
+            <p className="eyebrow">WORKFLOW OUTPUT</p>
+            <h2>Workflow results</h2>
+            <p>Planning <strong>{durationText(planningMs)}</strong></p>
+            <p>Execution <strong>{durationText(executionMs)}</strong></p>
+            <small>Execution adds Run and Resume calls in this tab.</small>
+            {completed ? (
+              <>
+                <p>Selected tickets <code>{ticketIds(completed.details).join(", ") || "—"}</code></p>
+                <p>Follow-up tasks <strong>{resultTasks.length}</strong></p>
+                {resultTasks.map((task) => (
+                  <p key={task.ticket_id}><code>{task.ticket_id}</code><small>{task.summary}</small></p>
+                ))}
+              </>
+            ) : <p className="muted">Results appear when the workflow completes.</p>}
+          </section>
 
           <section className="panel">
             <div className="panel-heading">

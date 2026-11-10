@@ -1,6 +1,7 @@
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from json import dumps
 from logging import INFO, Formatter, StreamHandler, getLogger
@@ -43,25 +44,32 @@ def log_event(event: str, **fields: object) -> None:
     }))
 
 
+@dataclass
+class StageMeasurement:
+    duration_ms: float = 0.0
+
+
 @contextmanager
 def observe_stage(
     stage: Literal["planning", "execution"], workflow_id: UUID
-) -> Iterator[None]:
+) -> Iterator[StageMeasurement]:
     with trace_span(f"workflow.{stage}", attributes={"axon.workflow_id": str(workflow_id)}):
         started = perf_counter()
         outcome = "ok"
+        measurement = StageMeasurement()
         try:
-            yield
+            yield measurement
         except Exception:
             outcome = "error"
             raise
         finally:
             seconds = perf_counter() - started
+            measurement.duration_ms = round(seconds * 1000, 2)
             stage_duration.labels(stage=stage, outcome=outcome).observe(seconds)
             log_event(
                 "workflow.stage",
                 stage=stage,
                 workflow_id=str(workflow_id),
                 outcome=outcome,
-                duration_ms=round(seconds * 1000, 2),
+                duration_ms=measurement.duration_ms,
             )

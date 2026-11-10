@@ -527,3 +527,26 @@ small, time {
   .steps li { grid-template-columns: 2rem minmax(0, 1fr); }
   .steps .write-tag { grid-column: 2; }
 }
+
+
+/* Saved workflow lookup */
+.saved-workflow {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line, #27394e);
+}
+.saved-workflow summary {
+  width: fit-content;
+  color: var(--muted, #a7b6cc);
+  cursor: pointer;
+  font-size: .86rem;
+}
+.saved-workflow summary:hover { color: var(--mint, #88e3c3); }
+.saved-workflow form { margin-top: 12px; }
+.saved-workflow-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.saved-workflow-controls input { flex: 1 1 14rem; min-width: 0; width: auto; margin-bottom: 0; }
+.saved-workflow-controls button { white-space: nowrap; }

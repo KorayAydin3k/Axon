@@ -81,6 +81,7 @@ function App() {
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
+  const [savedWorkflowId, setSavedWorkflowId] = useState("");
   const [token, setToken] = useState("");
   const [copiedId, setCopiedId] = useState("");
   const [busy, setBusy] = useState("");
@@ -154,6 +155,30 @@ function App() {
     setToken("");
     setPlanningMs(null);
     setExecutionMs(null);
+  }
+
+  async function openSavedWorkflow() {
+    const id = savedWorkflowId.trim();
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) {
+      throw new Error("Enter a valid workflow ID.");
+    }
+
+    const savedPath = `/workflows/${id}`;
+    const [next, history, planJob] = await Promise.all([
+      api<Workflow>(savedPath, { cache: "no-store" }),
+      api<WorkflowEvent[]>(savedPath + "/events", { cache: "no-store" }),
+      api<PlanJob>(savedPath + "/plan-job", { cache: "no-store" }).catch(() => null),
+    ]);
+
+    setWorkflow(next);
+    setText(next.request);
+    setEvents(history);
+    setToken("");
+    setCopiedId("");
+    setPlan(planJob?.status === "ready" ? planJob.plan : null);
+    setPlanningMs(planJob?.status === "ready" ? planJob.duration_ms : null);
+    if (workflow?.id !== next.id) setExecutionMs(null);
+    if (planJob === null) setError("Workflow opened. Its saved plan could not be loaded.");
   }
 
   async function refresh() {
@@ -284,6 +309,24 @@ function App() {
                 onChange={(event) => setText(event.target.value)} />
               <button className="primary" disabled={!!busy || !text.trim()}
                 onClick={() => void perform("Creating workflow…", create)}>Create workflow</button>
+            <details className="saved-workflow">
+              <summary>Open a saved workflow</summary>
+              <form onSubmit={(event) => {
+                event.preventDefault();
+                if (!busy && savedWorkflowId.trim()) {
+                  void perform("Opening workflow…", openSavedWorkflow);
+                }
+              }}>
+                <label htmlFor="saved-workflow-id">Workflow ID</label>
+                <div className="saved-workflow-controls">
+                  <input id="saved-workflow-id" value={savedWorkflowId} maxLength={64}
+                    placeholder="Paste a workflow ID" autoComplete="off" spellCheck={false}
+                    disabled={!!busy} onChange={(event) => setSavedWorkflowId(event.target.value)} />
+                  <button type="submit" disabled={!!busy || !savedWorkflowId.trim()}>Open workflow</button>
+                </div>
+                <small>Use the ID from a previous run to open its saved details.</small>
+              </form>
+            </details>
             </section>
 
             <section className="panel plan-panel" aria-labelledby="plan-title">

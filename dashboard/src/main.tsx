@@ -63,12 +63,26 @@ function ticketIds(details: Record<string, unknown>): string[] {
   return [];
 }
 
+function statusText(status: string) {
+  return status.replaceAll("_", " ");
+}
+
+function approvalTokenError(value: string) {
+  try {
+    new Headers({ "X-Axon-Approval-Token": value });
+    return "";
+  } catch {
+    return "Paste the operator token exactly as configured, without extra formatting.";
+  }
+}
+
 function App() {
   const [text, setText] = useState(exampleRequest);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [token, setToken] = useState("");
+  const [copiedId, setCopiedId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [planningMs, setPlanningMs] = useState<number | null>(null);
@@ -76,9 +90,14 @@ function App() {
   const creation = useRef<{ text: string; key: string } | null>(null);
 
   const path = workflow ? `/workflows/${workflow.id}` : "";
-  const waiting = workflow?.status === "WAITING_FOR_APPROVAL";
-  const approval = waiting ? events.find((event) => event.to_status === "WAITING_FOR_APPROVAL") : undefined;
+  const status = workflow?.status ?? "READY";
+  const approval = status === "WAITING_FOR_APPROVAL"
+    ? [...events].reverse().find((event) => event.to_status === "WAITING_FOR_APPROVAL")
+    : undefined;
   const digest = approval?.details.plan_hash;
+  const approvalTickets = approval ? ticketIds(approval.details) : [];
+  const approvalToken = token.trim();
+  const tokenError = approvalTokenError(approvalToken);
   const completed = events.find((event) => event.to_status === "COMPLETED");
   const tasks = completed?.details.followup_tasks;
   const resultTasks = Array.isArray(tasks) ? tasks.filter(
@@ -89,6 +108,12 @@ function App() {
   const durationText = (ms: number | null) =>
     ms === null ? "—" : ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toFixed(2)} s`;
   const canRun = workflow && plan && ["PENDING", "RUNNING", "RETRYING"].includes(workflow.status);
+  const overviewStats = [
+    { label: "Workflows", value: "128", detail: "+12% this month" },
+    { label: "Active", value: "18", detail: "6 currently running" },
+    { label: "Success", value: "96.4%", detail: "+2.1% vs baseline" },
+    { label: "Latency", value: "1.9s", detail: "Median execution" },
+  ];
 
   async function perform(label: string, action: () => Promise<void>) {
     setBusy(label);
@@ -157,124 +182,210 @@ function App() {
   }
 
   async function decide(decision: "approve" | "reject") {
-    if (typeof digest !== "string") return;
+    if (typeof digest !== "string" || !approvalToken || tokenError) return;
     setWorkflow(await post<Workflow>(path + "/" + decision, { plan_hash: digest }, {
-      "X-Axon-Approval-Token": token.trim(),
+      "X-Axon-Approval-Token": approvalToken,
     }));
     setToken("");
     setEvents(await api<WorkflowEvent[]>(path + "/events"));
   }
 
+  async function copyWorkflowId() {
+    if (!workflow) return;
+    if (!navigator.clipboard) throw new Error("Clipboard unavailable. Select the workflow ID to copy it.");
+    await navigator.clipboard.writeText(workflow.id);
+    setCopiedId(workflow.id);
+  }
+
   return (
-    <main>
-      <header className="masthead">
-        <div><p className="eyebrow">AXON / OPERATOR CONSOLE</p><h1>Workflows</h1></div>
-        <span className="badge">{workflow?.status.replaceAll("_", " ") ?? "READY"}</span>
-      </header>
-      <p className="intro">Create a request, review the execution plan, and decide which actions may proceed.</p>
-      <div className="notice" aria-live="polite">{busy}</div>
-      {error && <p className="error" role="alert">{error}</p>}
+    <div className="workspace-shell">
+      <aside className="sidebar">
+        <div className="brand-block">
+          <span className="axon-brand">AXON</span>
+          <span className="brand-subtitle">Operator Console</span>
+        </div>
 
-      <div className="columns">
-        <div className="stack">
-          <section className="panel">
-            <p className="eyebrow">01 / REQUEST</p>
-            <h2>Create a workflow</h2>
-            <label htmlFor="request">Request</label>
-            <textarea id="request" maxLength={4000} value={text}
-              onChange={(event) => setText(event.target.value)} />
-            <button className="primary" disabled={!!busy || !text.trim()}
-              onClick={() => void perform("Creating workflow…", create)}>Create workflow</button>
-            {workflow && <p className="identifier">Workflow ID <code>{workflow.id}</code></p>}
-          </section>
+        <nav className="sidebar-nav" aria-label="Primary navigation">
+          <button className="nav-item active" type="button">Overview</button>
+          <button className="nav-item" type="button">Workflows</button>
+          <button className="nav-item" type="button">Executions</button>
+          <button className="nav-item" type="button">Approvals</button>
+        </nav>
 
-          <section className="panel">
-            <p className="eyebrow">02 / PLAN</p>
-            <h2>Review the plan</h2>
-            <div className="actions">
-              <button disabled={!!busy || !workflow || (workflow.status !== "PENDING" && !plan)}
-                onClick={() => void perform("Generating plan…", previewPlan)}>Preview plan</button>
-              <button className="primary" disabled={!!busy || !canRun}
-                onClick={() => void perform("Running workflow…", run)}>
-                {workflow?.status === "RUNNING" || workflow?.status === "RETRYING" ? "Resume workflow" : "Run workflow"}
+        <div className="sidebar-card">
+          <p className="eyebrow">ENGINE STATUS</p>
+          <div className="engine-pill">
+            <span className="status-dot" aria-hidden="true" />
+            Local workflow engine
+          </div>
+          <small>Deterministic orchestration and policy enforcement.</small>
+        </div>
+      </aside>
+
+      <main className="workspace">
+        <div className="topbar">
+          <p className="eyebrow"><span className="axon-brand mini">AXON <span>OPERATOR CONSOLE</span></span></p>
+          <span className="environment">Local workflow engine</span>
+        </div>
+
+        <header className="masthead">
+          <div>
+            <h1>Workflows</h1>
+            <p className="intro">Turn a support request into a validated plan, review its impact, and control what runs.</p>
+          </div>
+        </header>
+
+        <section className="stat-grid" aria-label="Workflow overview metrics">
+          {overviewStats.map((stat) => (
+            <div key={stat.label} className="stat-card">
+              <span>{stat.label}</span>
+              <strong>{stat.value}</strong>
+              <small>{stat.detail}</small>
+            </div>
+          ))}
+        </section>
+
+        <div className="workflow-bar">
+          <span className="badge" data-status={status}>{statusText(status)}</span>
+          {workflow ? (
+            <div className="workflow-id">
+              <span>Workflow ID</span>
+              <code>{workflow.id}</code>
+              <button className="quiet" type="button" disabled={!!busy}
+                onClick={() => void perform("Copying workflow ID…", copyWorkflowId)}>
+                {copiedId === workflow.id ? "Copied" : "Copy ID"}
               </button>
             </div>
-            {plan ? (
-              <ol className="steps">
-                {plan.steps.map((step) => (
-                  <li key={step.name}>
-                    <code>{step.tool}</code>
-                    <small>{step.arguments.limit !== undefined && `Limit ${step.arguments.limit} · `}
-                      {step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "Starts the plan"}
-                    </small>
-                  </li>
-                ))}
-              </ol>
-            ) : <p className="muted">The validated plan will appear here.</p>}
-          </section>
+          ) : <span className="muted">Start with the example request below.</span>}
         </div>
 
-        <div className="stack">
-          {approval && typeof digest === "string" && (
-            <section className="panel approval">
-              <p className="eyebrow">OPERATOR DECISION</p>
-              <h2>Approve follow-up tasks</h2>
-              <p>Tickets <code>{ticketIds(approval.details).join(", ")}</code></p>
-              <p className="identifier">Plan fingerprint <code>{digest}</code></p>
-              <label htmlFor="approval-token">Operator token</label>
-              <input id="approval-token" type="password" autoComplete="off" value={token}
-                onChange={(event) => setToken(event.target.value)} />
+        <div className="notice" role="status">{busy}</div>
+        {error && <p className="error" role="alert">{error}</p>}
+
+        <div className="columns">
+          <div className="stack">
+            <section className="panel" aria-labelledby="request-title">
+              <p className="eyebrow">01 / REQUEST</p>
+              <h2 id="request-title">Create a workflow</h2>
+              <label htmlFor="request">Support request</label>
+              <textarea id="request" maxLength={4000} value={text}
+                onChange={(event) => setText(event.target.value)} />
+              <button className="primary" disabled={!!busy || !text.trim()}
+                onClick={() => void perform("Creating workflow…", create)}>Create workflow</button>
+            </section>
+
+            <section className="panel plan-panel" aria-labelledby="plan-title">
+              <div className="panel-heading">
+                <div><p className="eyebrow">02 / PLAN</p><h2 id="plan-title">Execution plan</h2></div>
+                {plan && <span className="tag validated">Validated · {plan.steps.length} steps</span>}
+              </div>
+              {plan ? (
+                <ol className="steps">
+                  {plan.steps.map((step, index) => (
+                    <li key={step.name}>
+                      <span className="step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
+                      <div>
+                        <code>{step.tool}</code>
+                        <small>{step.arguments.limit !== undefined && `Limit ${step.arguments.limit} · `}
+                          {step.depends_on.length ? `After ${step.depends_on.join(", ")}` : "Starts the plan"}
+                        </small>
+                      </div>
+                      {step.tool === "create_followup_tasks" && <span className="tag write-tag">Writes data</span>}
+                    </li>
+                  ))}
+                </ol>
+              ) : <p className="empty">Create a workflow, then preview its validated plan here.</p>}
               <div className="actions">
-                <button className="primary" disabled={!!busy || !token.trim()}
-                  onClick={() => void perform("Saving approval…", () => decide("approve"))}>Approve</button>
-                <button className="danger" disabled={!!busy || !token.trim()}
-                  onClick={() => void perform("Saving rejection…", () => decide("reject"))}>Reject</button>
+                <button disabled={!!busy || !workflow || (workflow.status !== "PENDING" && !plan)}
+                  onClick={() => void perform("Generating plan…", previewPlan)}>Preview plan</button>
+                <button className="primary" disabled={!!busy || !canRun}
+                  onClick={() => void perform("Running workflow…", run)}>
+                  {status === "RUNNING" || status === "RETRYING" ? "Resume workflow" : "Run workflow"}
+                </button>
               </div>
             </section>
-          )}
+          </div>
 
-          <section className="panel">
-            <p className="eyebrow">WORKFLOW OUTPUT</p>
-            <h2>Workflow results</h2>
-            <p>Planning <strong>{durationText(planningMs)}</strong></p>
-            <p>Execution <strong>{durationText(executionMs)}</strong></p>
-            <small>Execution adds Run and Resume calls in this tab.</small>
-            {completed ? (
-              <>
-                <p>Selected tickets <code>{ticketIds(completed.details).join(", ") || "—"}</code></p>
-                <p>Follow-up tasks <strong>{resultTasks.length}</strong></p>
-                {resultTasks.map((task) => (
-                  <p key={task.ticket_id}><code>{task.ticket_id}</code><small>{task.summary}</small></p>
-                ))}
-              </>
-            ) : <p className="muted">Results appear when the workflow completes.</p>}
-          </section>
+          <div className="stack">
+            {approval && typeof digest === "string" && (
+              <section className="panel approval" aria-labelledby="approval-title">
+                <p className="eyebrow">OPERATOR DECISION</p>
+                <h2 id="approval-title">Approve follow-up tasks</h2>
+                {approvalTickets.length > 0 ? (
+                  <p className="approval-impact">
+                    Create <strong>{approvalTickets.length} follow-up {approvalTickets.length === 1 ? "task" : "tasks"}</strong>
+                    {" for "}<code>{approvalTickets.join(", ")}</code>.
+                  </p>
+                ) : <p className="approval-impact">Review the proposed follow-up tasks before execution resumes.</p>}
+                <details className="fingerprint">
+                  <summary>Plan fingerprint</summary>
+                  <code>{digest}</code>
+                </details>
+                <label htmlFor="approval-token">Operator token</label>
+                <input id="approval-token" type="password" autoComplete="off" value={token}
+                  aria-invalid={Boolean(tokenError)} aria-describedby={tokenError ? "approval-token-error" : undefined}
+                  onChange={(event) => setToken(event.target.value)} />
+                {tokenError && <p className="field-error" id="approval-token-error" role="alert">{tokenError}</p>}
+                <div className="actions">
+                  <button className="primary" disabled={!!busy || !approvalToken || !!tokenError}
+                    onClick={() => void perform("Saving approval…", () => decide("approve"))}>Approve</button>
+                  <button className="danger" disabled={!!busy || !approvalToken || !!tokenError}
+                    onClick={() => void perform("Saving rejection…", () => decide("reject"))}>Reject</button>
+                </div>
+              </section>
+            )}
 
-          <section className="panel">
-            <div className="panel-heading">
-              <div><p className="eyebrow">03 / AUDIT TRAIL</p><h2>Event history</h2></div>
-              <button disabled={!!busy || !workflow}
-                onClick={() => void perform("Refreshing history…", refresh)}>Refresh</button>
-            </div>
-            {events.length ? (
-              <ol className="timeline">
-                {events.map((event) => {
-                  const ids = ticketIds(event.details);
-                  return (
-                    <li key={event.id}>
-                      <strong>{event.to_status.replaceAll("_", " ")}</strong>
-                      <small>{event.from_status.replaceAll("_", " ")} → {event.to_status.replaceAll("_", " ")}</small>
-                      <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time>
-                      {ids.length > 0 && <small>Tickets {ids.join(", ")}</small>}
-                    </li>
-                  );
-                })}
-              </ol>
-            ) : <p className="muted">Run a workflow to see its state changes.</p>}
-          </section>
+            <section className="panel" aria-labelledby="results-title">
+              <p className="eyebrow">03 / OUTPUT</p>
+              <h2 id="results-title">Workflow results</h2>
+              <dl className="metrics">
+                <div><dt>Planning</dt><dd>{durationText(planningMs)}</dd></div>
+                <div><dt>Execution</dt><dd>{durationText(executionMs)}</dd></div>
+              </dl>
+              <small>Execution totals Run and Resume calls in this tab.</small>
+              {completed ? (
+                <>
+                  <div className="result-heading">
+                    <p>Selected tickets <code>{ticketIds(completed.details).join(", ") || "—"}</code></p>
+                    <span className="tag validated">{resultTasks.length} follow-up {resultTasks.length === 1 ? "task" : "tasks"}</span>
+                  </div>
+                  {resultTasks.length > 0 && (
+                    <ul className="result-list">
+                      {resultTasks.map((task) => (
+                        <li key={task.ticket_id}><code>{task.ticket_id}</code><small>{task.summary}</small></li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              ) : <p className="muted">{status === "CANCELLED" ? "This workflow was cancelled." : "Results appear when the workflow completes."}</p>}
+            </section>
+
+            <section className="panel" aria-labelledby="history-title">
+              <div className="panel-heading">
+                <div><p className="eyebrow">04 / AUDIT TRAIL</p><h2 id="history-title">Event history</h2></div>
+                <button className="quiet" disabled={!!busy || !workflow}
+                  onClick={() => void perform("Refreshing history…", refresh)}>Refresh</button>
+              </div>
+              {events.length ? (
+                <ol className="timeline">
+                  {events.map((event) => {
+                    const ids = ticketIds(event.details);
+                    return (
+                      <li key={event.id}>
+                        <span className="badge" data-status={event.to_status}>{statusText(event.to_status)}</span>
+                        <small>{statusText(event.from_status)} → {statusText(event.to_status)}</small>
+                        <time dateTime={event.created_at}>{new Date(event.created_at).toLocaleString()}</time>
+                        {ids.length > 0 && <small>Tickets {ids.join(", ")}</small>}
+                      </li>
+                    );
+                  })}
+                </ol>
+              ) : <p className="muted">Run a workflow to see its state changes.</p>}
+            </section>
+          </div>
         </div>
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
 

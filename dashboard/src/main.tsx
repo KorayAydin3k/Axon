@@ -108,11 +108,23 @@ function App() {
   const durationText = (ms: number | null) =>
     ms === null ? "—" : ms < 1000 ? `${ms.toFixed(1)} ms` : `${(ms / 1000).toFixed(2)} s`;
   const canRun = workflow && plan && ["PENDING", "RUNNING", "RETRYING"].includes(workflow.status);
+  const overviewStatus = workflow?.status ?? "READY";
+  const overviewNeedsApproval = overviewStatus === "WAITING_FOR_APPROVAL";
   const overviewStats = [
-    { label: "Workflows", value: "128", detail: "+12% this month" },
-    { label: "Active", value: "18", detail: "6 currently running" },
-    { label: "Success", value: "96.4%", detail: "+2.1% vs baseline" },
-    { label: "Latency", value: "1.9s", detail: "Median execution" },
+    {
+      label: "Workflow status",
+      value: overviewNeedsApproval
+        ? "Waiting"
+        : overviewStatus.charAt(0) + overviewStatus.slice(1).toLowerCase().replaceAll("_", " "),
+      detail: overviewNeedsApproval ? "Operator approval required" : "Current workflow",
+    },
+    {
+      label: "Validated steps",
+      value: plan ? String(plan.steps.length) : "—",
+      detail: plan ? "Steps in the current plan" : "Preview a plan to see its steps",
+    },
+    { label: "Planning", value: durationText(planningMs), detail: "Current plan generation" },
+    { label: "Execution", value: durationText(executionMs), detail: "Run and Resume in this tab" },
   ];
 
   async function perform(label: string, action: () => Promise<void>) {

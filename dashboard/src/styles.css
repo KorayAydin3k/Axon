@@ -550,3 +550,32 @@ small, time {
 }
 .saved-workflow-controls input { flex: 1 1 14rem; min-width: 0; width: auto; margin-bottom: 0; }
 .saved-workflow-controls button { white-space: nowrap; }
+
+
+/* Recent workflows */
+.recent-workflows {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line, #27394e);
+}
+.recent-workflows h3 { margin: 0 0 8px; font-size: .9rem; }
+.recent-workflows ul {
+  display: grid;
+  gap: 6px;
+  max-height: 13rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 3px;
+  list-style: none;
+}
+.recent-workflows button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.recent-workflows code { min-width: 0; overflow-wrap: anywhere; font-size: .76rem; }
+.recent-workflows button span { font-size: .75rem; }
+.recent-workflows button:disabled { cursor: default; }

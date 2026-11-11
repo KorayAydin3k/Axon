@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -76,7 +76,33 @@ function approvalTokenError(value: string) {
   }
 }
 
+type WorkflowHistory = {
+  selectedId: string | null;
+  recentIds: string[];
+};
+
+const workflowHistoryKey = "axon.dashboard.workflow-history";
+const recentWorkflowLimit = 20;
+const workflowIdPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+
+function readWorkflowHistory(): WorkflowHistory {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(workflowHistoryKey) ?? "{}") as Partial<WorkflowHistory> | null;
+    const selectedId = typeof saved?.selectedId === "string" && workflowIdPattern.test(saved.selectedId)
+      ? saved.selectedId.toLowerCase()
+      : null;
+    const ids = Array.isArray(saved?.recentIds) ? saved.recentIds : [];
+    const validIds = [selectedId, ...ids]
+      .filter((id): id is string => typeof id === "string" && workflowIdPattern.test(id))
+      .map((id) => id.toLowerCase());
+    return { selectedId, recentIds: [...new Set(validIds)].slice(0, recentWorkflowLimit) };
+  } catch {
+    return { selectedId: null, recentIds: [] };
+  }
+}
+
 function App() {
+  const [workflowHistory, setWorkflowHistory] = useState(readWorkflowHistory);
   const [text, setText] = useState(exampleRequest);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -84,7 +110,7 @@ function App() {
   const [savedWorkflowId, setSavedWorkflowId] = useState("");
   const [token, setToken] = useState("");
   const [copiedId, setCopiedId] = useState("");
-  const [busy, setBusy] = useState("");
+  const [busy, setBusy] = useState(workflowHistory.selectedId ? "Restoring workflow…" : "");
   const [error, setError] = useState("");
   const [planningMs, setPlanningMs] = useState<number | null>(null);
   const [executionMs, setExecutionMs] = useState<number | null>(null);
@@ -157,18 +183,20 @@ function App() {
     setExecutionMs(null);
   }
 
-  async function openSavedWorkflow() {
-    const id = savedWorkflowId.trim();
-    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) {
-      throw new Error("Enter a valid workflow ID.");
-    }
+  const loadSavedWorkflow = useCallback(async (
+    rawId: string, preserveExecution = false, signal?: AbortSignal,
+  ) => {
+    const id = rawId.trim().toLowerCase();
+    if (!workflowIdPattern.test(id)) throw new Error("Enter a valid workflow ID.");
 
     const savedPath = `/workflows/${id}`;
+    const options: RequestInit = { cache: "no-store", signal };
     const [next, history, planJob] = await Promise.all([
-      api<Workflow>(savedPath, { cache: "no-store" }),
-      api<WorkflowEvent[]>(savedPath + "/events", { cache: "no-store" }),
-      api<PlanJob>(savedPath + "/plan-job", { cache: "no-store" }).catch(() => null),
+      api<Workflow>(savedPath, options),
+      api<WorkflowEvent[]>(savedPath + "/events", options),
+      api<PlanJob>(savedPath + "/plan-job", options).catch(() => null),
     ]);
+    if (signal?.aborted) return;
 
     setWorkflow(next);
     setText(next.request);
@@ -177,8 +205,52 @@ function App() {
     setCopiedId("");
     setPlan(planJob?.status === "ready" ? planJob.plan : null);
     setPlanningMs(planJob?.status === "ready" ? planJob.duration_ms : null);
-    if (workflow?.id !== next.id) setExecutionMs(null);
+    if (!preserveExecution) setExecutionMs(null);
     if (planJob === null) setError("Workflow opened. Its saved plan could not be loaded.");
+  }, []);
+
+  useEffect(() => {
+    const id = readWorkflowHistory().selectedId;
+    if (!id) return;
+
+    const controller = new AbortController();
+    setBusy("Restoring workflow…");
+    void loadSavedWorkflow(id, false, controller.signal)
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(error instanceof Error ? error.message : "Could not restore the selected workflow.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setBusy("");
+      });
+    return () => controller.abort();
+  }, [loadSavedWorkflow]);
+
+  const activeWorkflowId = workflow?.id.toLowerCase();
+  useEffect(() => {
+    if (!activeWorkflowId || !workflowIdPattern.test(activeWorkflowId)) return;
+    setWorkflowHistory((current) => {
+      if (current.selectedId === activeWorkflowId && current.recentIds[0] === activeWorkflowId) return current;
+      return {
+        selectedId: activeWorkflowId,
+        recentIds: [activeWorkflowId, ...current.recentIds.filter((id) => id !== activeWorkflowId)]
+          .slice(0, recentWorkflowLimit),
+      };
+    });
+  }, [activeWorkflowId]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(workflowHistoryKey, JSON.stringify(workflowHistory));
+    } catch {
+      // The in-memory list is available when browser storage is disabled.
+    }
+  }, [workflowHistory]);
+
+  function openWorkflow(id: string) {
+    const preserveExecution = activeWorkflowId === id.trim().toLowerCase();
+    void perform("Opening workflow…", () => loadSavedWorkflow(id, preserveExecution));
   }
 
   async function refresh() {
@@ -309,12 +381,28 @@ function App() {
                 onChange={(event) => setText(event.target.value)} />
               <button className="primary" disabled={!!busy || !text.trim()}
                 onClick={() => void perform("Creating workflow…", create)}>Create workflow</button>
+            {workflowHistory.recentIds.length > 0 && (
+              <section className="recent-workflows" aria-labelledby="recent-workflows-title">
+                <h3 id="recent-workflows-title">Recent workflows</h3>
+                <ul>
+                  {workflowHistory.recentIds.map((id) => (
+                    <li key={id}>
+                      <button type="button" disabled={!!busy || id === activeWorkflowId}
+                        onClick={() => openWorkflow(id)}>
+                        <code>{id}</code>
+                        <span>{id === activeWorkflowId ? "Selected" : "Open"}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
             <details className="saved-workflow">
               <summary>Open a saved workflow</summary>
               <form onSubmit={(event) => {
                 event.preventDefault();
                 if (!busy && savedWorkflowId.trim()) {
-                  void perform("Opening workflow…", openSavedWorkflow);
+                  openWorkflow(savedWorkflowId);
                 }
               }}>
                 <label htmlFor="saved-workflow-id">Workflow ID</label>

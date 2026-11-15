@@ -7,6 +7,7 @@ from secrets import token_urlsafe
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock
+from urllib.error import URLError
 from uuid import UUID
 
 import pytest
@@ -290,3 +291,68 @@ def test_invalid_ollama_response_cannot_execute(scenario, monkeypatch, ollama_bo
         ) == 0
 
     assert task_count(workflow_id) == 0
+
+
+
+def test_workflow_list_filters_pending_approvals(scenario):
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    filters = {"status": "WAITING_FOR_APPROVAL", "limit": 100}
+
+    response = client.get("/workflows", params=filters)
+    assert response.status_code == 200, response.text
+    records = response.json()["items"]
+    assert any(row["id"] == str(workflow_id) for row in records)
+    assert all(row["status"] == "WAITING_FOR_APPROVAL" for row in records)
+
+    response = client.post(path + "/reject", json={"plan_hash": digest}, headers=headers)
+    assert response.status_code == 200, response.text
+
+    response = client.get("/workflows", params=filters)
+    assert response.status_code == 200, response.text
+    assert all(row["id"] != str(workflow_id) for row in response.json()["items"])
+    assert client.get("/workflows", params={"status": "INVALID"}).status_code == 422
+
+
+@pytest.mark.parametrize("route", ["/plan", "/plan-job"])
+@pytest.mark.parametrize(
+    "failure, error_code",
+    [
+        pytest.param(TimeoutError("upstream timeout"), "ollama_timeout", id="timeout"),
+        pytest.param(
+            URLError(TimeoutError("upstream timeout")), "ollama_timeout", id="wrapped-timeout"
+        ),
+        pytest.param(
+            URLError(ConnectionRefusedError("connection refused")),
+            "ollama_connection_error",
+            id="connection-refused",
+        ),
+        pytest.param(None, "ollama_invalid_response", id="invalid-response"),
+    ],
+)
+def test_planning_failure_logs_reason(scenario, monkeypatch, route, failure, error_code):
+    from app.api import workflows as workflows_api
+    from app.planner import ollama_planner
+
+    client, path, workflow_id, _ = scenario
+
+    def fake_ollama(*args, **kwargs):
+        if failure is not None:
+            raise failure
+        return BytesIO(b'{"done":')
+
+    monkeypatch.setattr(ollama_planner, "urlopen", fake_ollama)
+    log = Mock(wraps=workflows_api.log_event)
+    monkeypatch.setattr(workflows_api, "log_event", log)
+
+    response = client.post(path + route)
+    if route == "/plan":
+        assert response.status_code == 502, response.text
+    else:
+        assert response.status_code == 202, response.text
+        job = client.get(path + route)
+        assert job.status_code == 200, job.text
+        assert job.json()["status"] == "failed", job.text
+
+    failures = [entry.kwargs for entry in log.call_args_list if entry.args == ("planning.failed",)]
+    assert failures == [{"workflow_id": str(workflow_id), "error_code": error_code}]

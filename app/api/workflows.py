@@ -34,6 +34,14 @@ from app.validation.policy import ToolPolicyViolation
 router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 
+def _generate_logged_plan(request_text: str, workflow_id: UUID) -> WorkflowPlan:
+    try:
+        return generate_plan(request_text)
+    except PlannerError as error:
+        log_event("planning.failed", workflow_id=str(workflow_id), error_code=error.code)
+        raise
+
+
 class WorkflowCreate(BaseModel):
     request: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)
@@ -122,8 +130,11 @@ def list_workflows(
     session: Annotated[Session, Depends(get_session)],
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     before: UUID | None = None,
+    workflow_status: Annotated[WorkflowStatus | None, Query(alias="status")] = None,
 ) -> WorkflowPage:
     query = select(Workflow.id, Workflow.status, Workflow.created_at)
+    if workflow_status is not None:
+        query = query.where(Workflow.status == workflow_status.value)
     if before is not None:
         cursor_time = session.scalar(select(Workflow.created_at).where(Workflow.id == before))
         if cursor_time is None:
@@ -216,7 +227,7 @@ def _generate_workflow_plan(
 
     try:
         with observe_stage("planning", workflow_id) as timing:
-            candidate = generate_plan(request_text)
+            candidate = _generate_logged_plan(request_text, workflow_id)
     except PlannerRejected as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except PlannerError as error:

@@ -112,13 +112,25 @@ type WorkflowPage = {
   next_cursor: string | null;
 };
 
-type ExecutionsProps = {
+type WorkflowListView = "executions" | "approvals";
+type WorkflowView = "workflows" | WorkflowListView;
+
+const navigationItems = [
+  { view: "workflows", label: "Workflows" },
+  { view: "executions", label: "Executions" },
+  { view: "approvals", label: "Approvals" },
+] as const;
+
+type WorkflowListProps = {
+  view: WorkflowListView;
   busy: boolean;
   openError: string;
   onOpen: (id: string) => void;
 };
 
-function Executions({ busy, openError, onOpen }: ExecutionsProps) {
+function WorkflowList({ view, busy, openError, onOpen }: WorkflowListProps) {
+  const approvals = view === "approvals";
+  const title = approvals ? "Approvals" : "Executions";
   const [page, setPage] = useState<WorkflowPage | null>(null);
   const [pageRequest, setPageRequest] = useState<{ before?: string }>({});
   const [loading, setLoading] = useState(true);
@@ -127,6 +139,7 @@ function Executions({ busy, openError, onOpen }: ExecutionsProps) {
   useEffect(() => {
     const controller = new AbortController();
     const query = new URLSearchParams({ limit: "20" });
+    if (approvals) query.set("status", "WAITING_FOR_APPROVAL");
     if (pageRequest.before) query.set("before", pageRequest.before);
 
     void api<WorkflowPage>(`/workflows?${query}`, {
@@ -140,13 +153,13 @@ function Executions({ busy, openError, onOpen }: ExecutionsProps) {
       }));
     }).catch((failure: unknown) => {
       if (!controller.signal.aborted) {
-        setError(failure instanceof Error ? failure.message : "Could not load executions.");
+        setError(failure instanceof Error ? failure.message : "Could not load workflows.");
       }
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [pageRequest]);
+  }, [approvals, pageRequest]);
 
   function requestPage(before?: string) {
     setError("");
@@ -155,16 +168,18 @@ function Executions({ busy, openError, onOpen }: ExecutionsProps) {
   }
 
   return (
-    <section className="panel workflow-executions" aria-labelledby="executions-title">
+    <section className="panel workflow-executions" aria-labelledby="workflow-list-title">
       <div className="panel-heading">
-        <h1 id="executions-title">Executions</h1>
+        <h1 id="workflow-list-title">{title}</h1>
         <button type="button" disabled={busy || loading} onClick={() => requestPage()}>Refresh list</button>
       </div>
-      {loading && <p className="muted" role="status">Loading executions…</p>}
+      {loading && <p className="muted" role="status">Loading {view}…</p>}
       {busy && <p className="muted" role="status">Opening workflow…</p>}
       {error && <p className="error" role="alert">{error}</p>}
       {openError && <p className="error" role="alert">{openError}</p>}
-      {page?.items.length === 0 && <p className="muted">No workflows have been created yet.</p>}
+      {page?.items.length === 0 && <p className="muted">
+        {approvals ? "No workflows are waiting for approval." : "No workflows have been created yet."}
+      </p>}
       {page && page.items.length > 0 && (
         <ul className="execution-records">
           {page.items.map((item) => (
@@ -187,7 +202,7 @@ function Executions({ busy, openError, onOpen }: ExecutionsProps) {
 }
 
 function App() {
-  const [showExecutions, setShowExecutions] = useState(false);
+  const [view, setView] = useState<WorkflowView>("workflows");
   const [workflowHistory, setWorkflowHistory] = useState(readWorkflowHistory);
   const [text, setText] = useState(exampleRequest);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
@@ -334,11 +349,11 @@ function App() {
     }
   }, [workflowHistory]);
 
-  function openWorkflow(id: string, fromExecutions = false) {
+  function openWorkflow(id: string, fromList = false) {
     const preserveExecution = activeWorkflowId === id.trim().toLowerCase();
     void perform("Opening workflow…", async () => {
       await loadSavedWorkflow(id, preserveExecution);
-      if (fromExecutions) setShowExecutions(false);
+      if (fromList) setView("workflows");
     });
   }
 
@@ -404,15 +419,21 @@ function App() {
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
-          <button className={showExecutions ? "nav-item" : "nav-item active"} type="button"
-            aria-current={showExecutions ? undefined : "page"}
-            disabled={!!busy} onClick={() => setShowExecutions(false)}>Overview</button>
-          <button className="nav-item" type="button"
-            disabled={!!busy} onClick={() => setShowExecutions(false)}>Workflows</button>
-          <button className={showExecutions ? "nav-item active" : "nav-item"} type="button"
-            aria-current={showExecutions ? "page" : undefined}
-            disabled={!!busy} onClick={() => { setError(""); setShowExecutions(true); }}>Executions</button>
-          <button className="nav-item" type="button">Approvals</button>
+          {navigationItems.map((item) => (
+            <button
+              key={item.view}
+              className={view === item.view ? "nav-item active" : "nav-item"}
+              type="button"
+              aria-current={view === item.view ? "page" : undefined}
+              disabled={!!busy}
+              onClick={() => {
+                if (view !== item.view) setError("");
+                setView(item.view);
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
         </nav>
 
         <div className="sidebar-card">
@@ -425,7 +446,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="workspace" hidden={showExecutions}>
+      <main className="workspace" hidden={view !== "workflows"}>
         <div className="topbar">
           <p className="eyebrow"><span className="axon-brand mini">AXON <span>OPERATOR CONSOLE</span></span></p>
           <span className="environment">Local workflow engine</span>
@@ -622,9 +643,10 @@ function App() {
           </div>
         </div>
       </main>
-      {showExecutions && (
+      {view !== "workflows" && (
         <main className="workspace">
-          <Executions busy={!!busy} openError={error} onOpen={(id) => openWorkflow(id, true)} />
+          <WorkflowList key={view} view={view} busy={!!busy} openError={error}
+            onOpen={(id) => openWorkflow(id, true)} />
         </main>
       )}
     </div>

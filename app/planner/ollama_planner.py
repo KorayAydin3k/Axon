@@ -15,7 +15,9 @@ from app.validation.policy import ToolPolicyViolation
 
 
 class PlannerError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "planner_error") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class PlannerRejected(ValueError):
@@ -118,19 +120,25 @@ def generate_plan(user_request: str) -> WorkflowPlan:
         ):
             body = load(response)
     except HTTPError as error:
-        raise PlannerError(f"Ollama returned HTTP {error.code}") from error
+        raise PlannerError(
+            f"Ollama returned HTTP {error.code}", code="ollama_http_error"
+        ) from error
     except (URLError, TimeoutError) as error:
-        raise PlannerError("Could not reach the local Ollama service") from error
+        timed_out = isinstance(error, TimeoutError) or (
+            isinstance(error, URLError) and isinstance(error.reason, TimeoutError)
+        )
+        code = "ollama_timeout" if timed_out else "ollama_connection_error"
+        raise PlannerError("Could not reach the local Ollama service", code=code) from error
     except JSONDecodeError as error:
-        raise PlannerError("Ollama returned an invalid HTTP response") from error
+        raise PlannerError("Ollama returned an invalid HTTP response", code="ollama_invalid_response") from error
 
     if not isinstance(body, dict) or body.get("done") is not True or body.get("done_reason") == "length":
-        raise PlannerError("Ollama did not return a complete intent response")
+        raise PlannerError("Ollama did not return a complete intent response", code="ollama_invalid_response")
 
     try:
         intent = PlannerIntent.model_validate_json(body["message"]["content"])
     except (KeyError, TypeError, ValidationError) as error:
-        raise PlannerError("Ollama returned an invalid intent response") from error
+        raise PlannerError("Ollama returned an invalid intent response", code="ollama_invalid_response") from error
 
     if intent.action in ("unsupported", "needs_clarification"):
         raise PlannerRejected(intent.action)
@@ -142,6 +150,6 @@ def generate_plan(user_request: str) -> WorkflowPlan:
     except ToolPolicyViolation as error:
         raise PlannerRejected("tool_denied") from error
     except ValueError as error:
-        raise PlannerError("Plan failed dependency validation") from error
+        raise PlannerError("Plan failed dependency validation", code="invalid_plan_dependencies") from error
 
     return WorkflowPlan(steps=tuple(ordered_steps))

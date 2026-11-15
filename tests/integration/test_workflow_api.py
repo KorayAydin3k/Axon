@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from os import getenv
 from secrets import token_urlsafe
+from threading import Event
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -97,6 +99,72 @@ def test_approval_is_required_and_bound_to_plan(
     assert resumed.status_code == resume_code, resumed.text
     assert client.get(path).json()["status"] == final_status
     assert task_count(workflow_id) == expected_tasks
+
+
+def test_concurrent_resume_creates_one_task_per_ticket(scenario, monkeypatch):
+    from app.api import workflows as workflows_api
+    from app.persistence.database import engine
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    response = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+    assert response.status_code == 200, response.text
+    assert task_count(workflow_id) == 0
+
+    write_flushed = Event()
+    second_run_entered = Event()
+    release_write = Event()
+    write_calls = []
+    real_tool = SUPPORT_TOOLS["create_followup_tasks"]
+    real_execute = workflows_api.execute_workflow
+
+    def pause_after_flush(session, tool_workflow_id, inputs, arguments):
+        write_calls.append(tool_workflow_id)
+        output = real_tool(session, tool_workflow_id, inputs, arguments)
+        session.flush()
+        write_flushed.set()
+        assert release_write.wait(15), "Timed out waiting to release the task write"
+        return output
+
+    def observe_run(*args, **kwargs):
+        if write_flushed.is_set():
+            second_run_entered.set()
+        return real_execute(*args, **kwargs)
+
+    monkeypatch.setitem(SUPPORT_TOOLS, "create_followup_tasks", pause_after_flush)
+    monkeypatch.setattr(workflows_api, "execute_workflow", observe_run)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.post, path + "/run")
+        try:
+            assert write_flushed.wait(10), "First Resume did not flush the task rows"
+            second = pool.submit(client.post, path + "/run")
+            assert second_run_entered.wait(10), "Second Resume did not reach the engine"
+        finally:
+            release_write.set()
+        responses = [first.result(timeout=15), second.result(timeout=15)]
+
+    assert all(response.status_code in (200, 409) for response in responses), [
+        (response.status_code, response.text) for response in responses
+    ]
+    assert any(
+        response.status_code == 200 and response.json()["status"] == "COMPLETED"
+        for response in responses
+    )
+    assert client.get(path).json()["status"] == "COMPLETED"
+    assert write_calls == [workflow_id]
+
+    with Session(engine) as session:
+        ticket_ids = session.scalars(
+            select(FollowupTask.ticket_id)
+            .where(FollowupTask.workflow_id == workflow_id)
+            .order_by(FollowupTask.ticket_id)
+        ).all()
+    assert list(ticket_ids) == ["T-101", "T-102", "T-104"]
+
+    response = client.get(path + "/events")
+    assert response.status_code == 200, response.text
+    assert sum(event["to_status"] == "COMPLETED" for event in response.json()) == 1
 
 
 @pytest.mark.parametrize(

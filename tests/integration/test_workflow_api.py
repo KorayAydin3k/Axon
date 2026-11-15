@@ -1,9 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from json import dumps
 from os import getenv
 from secrets import token_urlsafe
 from threading import Event
 from types import SimpleNamespace
+from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
@@ -223,3 +226,67 @@ def test_tool_retries_preserve_atomic_task_writes(
         if event["to_status"] == "RETRYING"
     ]
     assert retry_counts == list(range(1, len(expected_waits) + 1))
+
+
+def ollama_response(content, done_reason="stop"):
+    return dumps({
+        "done": True,
+        "done_reason": done_reason,
+        "message": {"content": content},
+    }).encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "ollama_body",
+    [
+        pytest.param(b'{"done":', id="invalid-http-json"),
+        pytest.param(ollama_response('{"action":'), id="invalid-intent-json"),
+        pytest.param(
+            ollama_response('{"action":"list_tickets","limit":3}', done_reason="length"),
+            id="truncated-intent",
+        ),
+        pytest.param(
+            ollama_response('{"action":"send_email","limit":3}'), id="unknown-action"
+        ),
+        pytest.param(
+            ollama_response('{"action":"create_followup_tasks","limit":11}'),
+            id="out-of-range-limit",
+        ),
+        pytest.param(
+            ollama_response('{"action":"create_followup_tasks"}'), id="missing-limit"
+        ),
+    ],
+)
+def test_invalid_ollama_response_cannot_execute(scenario, monkeypatch, ollama_body):
+    from app.persistence.database import engine
+    from app.planner import ollama_planner
+
+    client, path, workflow_id, _ = scenario
+    ollama_request = Mock(side_effect=lambda *args, **kwargs: BytesIO(ollama_body))
+    monkeypatch.setattr(ollama_planner, "urlopen", ollama_request)
+
+    unexpected_tool = Mock(side_effect=AssertionError("Invalid plan reached a support tool"))
+    for tool_name in SUPPORT_TOOLS:
+        monkeypatch.setitem(SUPPORT_TOOLS, tool_name, unexpected_tool)
+
+    response = client.post(path + "/plan")
+    assert response.status_code == 502, response.text
+    ollama_request.assert_called_once()
+
+    response = client.post(path + "/run", params={"plan": "generated"})
+    assert 400 <= response.status_code < 500, response.text
+    unexpected_tool.assert_not_called()
+
+    with Session(engine) as session:
+        workflow = session.get(Workflow, workflow_id)
+        assert workflow is not None
+        assert workflow.status == "PENDING"
+        assert workflow.generated_plan is None
+        assert workflow.execution_plan is None
+        assert session.scalar(
+            select(func.count())
+            .select_from(WorkflowStep)
+            .where(WorkflowStep.workflow_id == workflow_id)
+        ) == 0
+
+    assert task_count(workflow_id) == 0

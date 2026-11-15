@@ -101,7 +101,93 @@ function readWorkflowHistory(): WorkflowHistory {
   }
 }
 
+type WorkflowListItem = {
+  id: string;
+  status: string;
+  created_at: string;
+};
+
+type WorkflowPage = {
+  items: WorkflowListItem[];
+  next_cursor: string | null;
+};
+
+type ExecutionsProps = {
+  busy: boolean;
+  openError: string;
+  onOpen: (id: string) => void;
+};
+
+function Executions({ busy, openError, onOpen }: ExecutionsProps) {
+  const [page, setPage] = useState<WorkflowPage | null>(null);
+  const [pageRequest, setPageRequest] = useState<{ before?: string }>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const query = new URLSearchParams({ limit: "20" });
+    if (pageRequest.before) query.set("before", pageRequest.before);
+
+    void api<WorkflowPage>(`/workflows?${query}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    }).then((result) => {
+      if (controller.signal.aborted) return;
+      setPage((previous) => ({
+        items: pageRequest.before && previous ? [...previous.items, ...result.items] : result.items,
+        next_cursor: result.next_cursor,
+      }));
+    }).catch((failure: unknown) => {
+      if (!controller.signal.aborted) {
+        setError(failure instanceof Error ? failure.message : "Could not load executions.");
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+    return () => controller.abort();
+  }, [pageRequest]);
+
+  function requestPage(before?: string) {
+    setError("");
+    setLoading(true);
+    setPageRequest({ before });
+  }
+
+  return (
+    <section className="panel workflow-executions" aria-labelledby="executions-title">
+      <div className="panel-heading">
+        <h1 id="executions-title">Executions</h1>
+        <button type="button" disabled={busy || loading} onClick={() => requestPage()}>Refresh list</button>
+      </div>
+      {loading && <p className="muted" role="status">Loading executions…</p>}
+      {busy && <p className="muted" role="status">Opening workflow…</p>}
+      {error && <p className="error" role="alert">{error}</p>}
+      {openError && <p className="error" role="alert">{openError}</p>}
+      {page?.items.length === 0 && <p className="muted">No workflows have been created yet.</p>}
+      {page && page.items.length > 0 && (
+        <ul className="execution-records">
+          {page.items.map((item) => (
+            <li key={item.id}>
+              <button type="button" className="execution-record" disabled={busy} onClick={() => onOpen(item.id)}>
+                <span className="badge" data-status={item.status}>{item.status.replaceAll("_", " ")}</span>
+                <code>{item.id}</code>
+                <time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {page?.next_cursor && (
+        <button type="button" disabled={busy || loading}
+          onClick={() => requestPage(page.next_cursor ?? undefined)}>Load older</button>
+      )}
+    </section>
+  );
+}
+
 function App() {
+  const [showExecutions, setShowExecutions] = useState(false);
   const [workflowHistory, setWorkflowHistory] = useState(readWorkflowHistory);
   const [text, setText] = useState(exampleRequest);
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
@@ -248,9 +334,12 @@ function App() {
     }
   }, [workflowHistory]);
 
-  function openWorkflow(id: string) {
+  function openWorkflow(id: string, fromExecutions = false) {
     const preserveExecution = activeWorkflowId === id.trim().toLowerCase();
-    void perform("Opening workflow…", () => loadSavedWorkflow(id, preserveExecution));
+    void perform("Opening workflow…", async () => {
+      await loadSavedWorkflow(id, preserveExecution);
+      if (fromExecutions) setShowExecutions(false);
+    });
   }
 
   async function refresh() {
@@ -315,9 +404,14 @@ function App() {
         </div>
 
         <nav className="sidebar-nav" aria-label="Primary navigation">
-          <button className="nav-item active" type="button">Overview</button>
-          <button className="nav-item" type="button">Workflows</button>
-          <button className="nav-item" type="button">Executions</button>
+          <button className={showExecutions ? "nav-item" : "nav-item active"} type="button"
+            aria-current={showExecutions ? undefined : "page"}
+            disabled={!!busy} onClick={() => setShowExecutions(false)}>Overview</button>
+          <button className="nav-item" type="button"
+            disabled={!!busy} onClick={() => setShowExecutions(false)}>Workflows</button>
+          <button className={showExecutions ? "nav-item active" : "nav-item"} type="button"
+            aria-current={showExecutions ? "page" : undefined}
+            disabled={!!busy} onClick={() => { setError(""); setShowExecutions(true); }}>Executions</button>
           <button className="nav-item" type="button">Approvals</button>
         </nav>
 
@@ -331,7 +425,7 @@ function App() {
         </div>
       </aside>
 
-      <main className="workspace">
+      <main className="workspace" hidden={showExecutions}>
         <div className="topbar">
           <p className="eyebrow"><span className="axon-brand mini">AXON <span>OPERATOR CONSOLE</span></span></p>
           <span className="environment">Local workflow engine</span>
@@ -528,6 +622,11 @@ function App() {
           </div>
         </div>
       </main>
+      {showExecutions && (
+        <main className="workspace">
+          <Executions busy={!!busy} openError={error} onOpen={(id) => openWorkflow(id, true)} />
+        </main>
+      )}
     </div>
   );
 }

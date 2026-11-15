@@ -7,8 +7,10 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response, status
+from fastapi import Query
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
+from sqlalchemy import tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -102,6 +104,40 @@ def create_workflow(
         result = WorkflowResponse.model_validate(workflow)
 
     return result
+
+
+class WorkflowListItem(BaseModel):
+    id: UUID
+    status: str
+    created_at: datetime
+
+
+class WorkflowPage(BaseModel):
+    items: list[WorkflowListItem]
+    next_cursor: UUID | None
+
+
+@router.get("", response_model=WorkflowPage)
+def list_workflows(
+    session: Annotated[Session, Depends(get_session)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    before: UUID | None = None,
+) -> WorkflowPage:
+    query = select(Workflow.id, Workflow.status, Workflow.created_at)
+    if before is not None:
+        cursor_time = session.scalar(select(Workflow.created_at).where(Workflow.id == before))
+        if cursor_time is None:
+            raise HTTPException(status_code=400, detail="Unknown workflow cursor")
+        query = query.where(tuple_(Workflow.created_at, Workflow.id) < (cursor_time, before))
+
+    rows = session.execute(
+        query.order_by(Workflow.created_at.desc(), Workflow.id.desc()).limit(limit + 1)
+    ).mappings().all()
+    items = [WorkflowListItem.model_validate(row) for row in rows[:limit]]
+    return WorkflowPage(
+        items=items,
+        next_cursor=items[-1].id if len(rows) > limit else None,
+    )
 
 
 @router.get("/{workflow_id}", response_model=WorkflowResponse)

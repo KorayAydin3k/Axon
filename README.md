@@ -108,13 +108,29 @@ The browser starts a preview with `POST /workflows/{id}/plan-job`, receives an a
 | Crash recovery | The execution process exited during task creation. Resume reused the first two committed steps |
 | Transient and permanent failures | Transient retries used 1, 2, and 4 second delays. A permanent failure stopped after one attempt |
 | Concurrent resume | PostgreSQL integration tests confirm one task-creation call, one task per expected ticket, and one completion event |
-| Duplicate run | Repeating a completed demo run returned HTTP 409 and left the same two task records |
+| Duplicate run | Replaying a separate two-ticket workflow returned HTTP 409 and preserved both follow-up task records |
 | Planning diagnostics | Both planning endpoints log `planning.failed` with the workflow ID and an error code for timeout, connection failure, or invalid model response |
 | Slow browser preview | With a controlled 65-second delay before planning, the initial response returned HTTP 202, polling continued past one minute, and the plan appeared |
-| Latest holdout rerun | 6 of 6 plans passed, including 3 of 3 expected rejections. All 3 executable cases selected the correct tools and passed end to end |
 | CI | PostgreSQL integration tests run in GitHub Actions |
 
-The [evaluation datasets](evals/) define expected outcomes for supported requests, clarification, and unsupported actions. The archived reports include a regression run with 12 of 12 plans and 8 of 8 execution checks passing. The [runner](scripts/run_eval.py) reports tool selection, full plan correctness, and execution separately. Its end-to-end execution rate uses all cases expected to run, including cases blocked at planning.
+### Evaluation results
+
+These counts describe fixed test sets for supported requests, clarification, and unsupported actions. The [archived reports](evals/results/) record aggregate planner and execution results.
+
+| Metric | Holdout rerun | Archived regression |
+| --- | --- | --- |
+| Dataset | [planner_holdout.jsonl](evals/planner_holdout.jsonl) | [planner_cases.jsonl](evals/planner_cases.jsonl) |
+| Dataset snapshot | [`563ecc2`](https://github.com/KorayAydin3k/Axon/commit/563ecc2) | — |
+| Run date | 2026-11-15 | — |
+| Total cases | 6 | 12 |
+| Planner checks, including expected rejections | 6/6 | 12/12 |
+| Exact plan matches on supported requests | 3/3 | — |
+| Correct tool selection on supported requests | 3/3 | — |
+| Expected rejections | 3/3 | — |
+| Successful execution checks | 3/3 | 8/8 |
+| End-to-end success on requests expected to execute | 3/3 | — |
+
+The [runner](scripts/run_eval.py) reports tool selection, full plan correctness, and execution separately. Its end-to-end execution rate uses all cases expected to run, including cases blocked at planning. Each execution check verifies the expected workflow state and selected tickets. Approval-gated cases can stop at `WAITING_FOR_APPROVAL`.
 
 Run the holdout evaluation against a running local stack.
 
@@ -130,4 +146,6 @@ The report includes per-case results, HTTP statuses, and plan latency. The comma
 
 ## Scope
 
-Axon demonstrates controlled execution with simulated support data. The operator token is a local configuration credential. Browser plan jobs execute inside the API process. Step checkpoints are persisted in PostgreSQL and support resuming interrupted workflow execution.
+Axon demonstrates controlled execution with simulated support data. The operator token authorizes approval and rejection in the local demo. Production deployment and multi-user authorization are outside the project's scope.
+
+Browser plan jobs execute inside the API process. PostgreSQL persists step checkpoints to support resuming interrupted workflow execution.

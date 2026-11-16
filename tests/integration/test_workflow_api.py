@@ -171,6 +171,75 @@ def test_approval_replay_preserves_decision_and_audit(
     assert task_count(workflow_id) == 0
 
 
+@pytest.mark.parametrize("action", ["approve", "reject"])
+@pytest.mark.parametrize(
+    "reason, expected_status",
+    [("missing_token", 403), ("invalid_token", 403), ("not_configured", 503)],
+)
+def test_denied_approval_logs_safe_audit_metadata(scenario, monkeypatch, action, reason, expected_status):
+    from json import dumps, loads
+    from logging import Handler
+
+    from app.observability.telemetry import logger
+    from app.persistence.database import engine
+    from app.persistence.models import WorkflowApproval
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    original_events = client.get(path + "/events").json()
+    wrong_token = "invalid-audit-probe-token"
+    supplied_headers = {}
+    if reason == "invalid_token":
+        supplied_headers = {"X-Axon-Approval-Token": wrong_token}
+    elif reason == "not_configured":
+        monkeypatch.delenv("AXON_APPROVAL_TOKEN", raising=False)
+        supplied_headers = headers
+
+    records = []
+
+    class Collector(Handler):
+        def emit(self, record):
+            records.append(loads(record.getMessage()))
+
+    collector = Collector()
+    logger.addHandler(collector)
+    try:
+        response = client.post(
+            f"{path}/{action}", json={"plan_hash": digest}, headers=supplied_headers,
+        )
+    finally:
+        logger.removeHandler(collector)
+
+    assert response.status_code == expected_status, response.text
+    denied = [record for record in records if record["event"] == "approval.access_denied"]
+    assert len(denied) == 1
+    audit = denied[0]
+    assert audit["workflow_id"] == str(workflow_id)
+    assert audit["action"] == action
+    assert audit["reason"] == reason
+    assert audit["status_code"] == expected_status
+    assert audit["request_id"]
+    assert any(
+        record["event"] == "http.request"
+        and record["request_id"] == audit["request_id"]
+        and record["status_code"] == expected_status
+        for record in records
+    )
+    assert set(audit) <= {
+        "timestamp", "event", "request_id", "trace_id", "workflow_id", "action", "reason", "status_code",
+    }
+    serialized = dumps(audit)
+    for secret in (headers["X-Axon-Approval-Token"], wrong_token, digest):
+        assert secret not in serialized
+
+    assert client.get(path).json()["status"] == "WAITING_FOR_APPROVAL"
+    assert client.get(path + "/events").json() == original_events
+    assert task_count(workflow_id) == 0
+    with Session(engine) as session:
+        pending = session.get(WorkflowApproval, (workflow_id, digest))
+        assert pending is not None and pending.decision is None and pending.decided_at is None
+
+
 def test_revoked_tool_policy_blocks_approved_write(scenario, monkeypatch):
     from app.persistence.database import engine
     from app.validation import policy

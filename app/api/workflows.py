@@ -5,7 +5,7 @@ from secrets import compare_digest
 from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
@@ -23,7 +23,7 @@ from app.engine.workflow_engine import (
     decide_approval,
     execute_workflow,
 )
-from app.observability.telemetry import observe_stage
+from app.observability.telemetry import log_event, observe_stage
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
 from app.planner.jobs import enqueue_plan_job, generate_workflow_plan
@@ -296,13 +296,35 @@ class ApprovalRequest(BaseModel):
 
 
 def require_approval_token(
+    request: Request,
     token: Annotated[str | None, Header(alias="X-Axon-Approval-Token")] = None,
 ) -> None:
     expected = getenv("AXON_APPROVAL_TOKEN")
+    if expected and token is not None and compare_digest(token.encode(), expected.encode()):
+        return
+
+    try:
+        workflow_id = str(UUID(str(request.path_params.get("workflow_id", ""))))
+    except ValueError:
+        workflow_id = None
+
     if not expected:
-        raise HTTPException(status_code=503, detail="Approval is not configured")
-    if token is None or not compare_digest(token.encode(), expected.encode()):
-        raise HTTPException(status_code=403, detail="Approval access denied")
+        status_code = 503
+        detail = "Approval is not configured"
+        reason = "not_configured"
+    else:
+        status_code = 403
+        detail = "Approval access denied"
+        reason = "missing_token" if token is None else "invalid_token"
+
+    log_event(
+        "approval.access_denied",
+        workflow_id=workflow_id,
+        action=request.url.path.rsplit("/", 1)[-1],
+        reason=reason,
+        status_code=status_code,
+    )
+    raise HTTPException(status_code=status_code, detail=detail)
 
 
 def _approval_response(

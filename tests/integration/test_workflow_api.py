@@ -171,6 +171,54 @@ def test_approval_replay_preserves_decision_and_audit(
     assert task_count(workflow_id) == 0
 
 
+def test_revoked_tool_policy_blocks_approved_write(scenario, monkeypatch):
+    from app.persistence.database import engine
+    from app.validation import policy
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "RUNNING"
+    assert task_count(workflow_id) == 0
+
+    tool = "create_followup_tasks"
+    execute_step = workflow_engine._execute_step
+    unexpected_write = Mock(side_effect=AssertionError("A denied tool was called"))
+    reached_write_step = False
+
+    with monkeypatch.context() as revoke:
+        def revoke_before_dispatch(session, workflow_id, step, position, inputs, plan_hash):
+            nonlocal reached_write_step
+            if step.tool == tool:
+                reached_write_step = True
+                revoke.setitem(policy._TOOL_POLICY, tool, policy.ToolDecision.DENY)
+            return execute_step(session, workflow_id, step, position, inputs, plan_hash)
+
+        revoke.setitem(SUPPORT_TOOLS, tool, unexpected_write)
+        revoke.setattr(workflow_engine, "_execute_step", revoke_before_dispatch)
+        denied = client.post(path + "/run")
+
+    assert reached_write_step
+    assert 400 <= denied.status_code < 500, denied.text
+    assert denied.json()["detail"] == "Tool execution is blocked by policy"
+    unexpected_write.assert_not_called()
+    assert task_count(workflow_id) == 0
+
+    with Session(engine) as session:
+        checkpoint = session.scalar(
+            select(WorkflowStep.name).where(
+                WorkflowStep.workflow_id == workflow_id, WorkflowStep.tool == tool
+            )
+        )
+        assert checkpoint is None
+
+    resumed = client.post(path + "/run")
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "COMPLETED"
+    assert task_count(workflow_id) == 3
+
+
 def test_concurrent_resume_creates_one_task_per_ticket(scenario, monkeypatch):
     from app.api import workflows as workflows_api
     from app.persistence.database import engine

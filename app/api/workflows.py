@@ -2,11 +2,10 @@ from collections.abc import Iterator
 from datetime import datetime
 from os import getenv
 from secrets import compare_digest
-from time import time
 from typing import Annotated, Literal
-from uuid import UUID, uuid4
+from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from sqlalchemy import select
@@ -24,22 +23,15 @@ from app.engine.workflow_engine import (
     decide_approval,
     execute_workflow,
 )
-from app.observability.telemetry import log_event, observe_stage
+from app.observability.telemetry import observe_stage
 from app.persistence.database import engine
 from app.persistence.models import Workflow, WorkflowEvent
-from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
+from app.planner.jobs import enqueue_plan_job, generate_workflow_plan
+from app.planner.ollama_planner import PlannerError, PlannerRejected
 from app.validation.plan import WorkflowPlan
 from app.validation.policy import ToolPolicyViolation
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
-
-
-def _generate_logged_plan(request_text: str, workflow_id: UUID) -> WorkflowPlan:
-    try:
-        return generate_plan(request_text)
-    except PlannerError as error:
-        log_event("planning.failed", workflow_id=str(workflow_id), error_code=error.code)
-        raise
 
 
 class WorkflowCreate(BaseModel):
@@ -210,56 +202,22 @@ def get_workflow_events(
     return list(session.scalars(statement))
 
 
-def _generate_workflow_plan(
-    workflow_id: UUID, session: Session, job_id: str | None = None,
-) -> tuple[WorkflowPlan, float | None]:
-    with session.begin():
-        workflow = session.get(Workflow, workflow_id)
-        if workflow is None:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-        if workflow.generated_plan is not None:
-            return WorkflowPlan.model_validate(workflow.generated_plan), None
-        if job_id is not None and not _owns_plan_job(workflow, job_id):
-            raise HTTPException(status_code=409, detail="Planning job expired")
-        if workflow.status != WorkflowStatus.PENDING:
-            raise HTTPException(status_code=409, detail="Workflow is no longer pending")
-        request_text = workflow.request
-
-    try:
-        with observe_stage("planning", workflow_id) as timing:
-            candidate = _generate_logged_plan(request_text, workflow_id)
-    except PlannerRejected as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-    except PlannerError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-
-    with session.begin():
-        workflow = session.get(
-            Workflow, workflow_id, with_for_update=True, populate_existing=True
-        )
-        if workflow is None:
-            raise HTTPException(status_code=404, detail="Workflow not found")
-        if workflow.generated_plan is not None:
-            return WorkflowPlan.model_validate(workflow.generated_plan), None
-        if job_id is not None and not _owns_plan_job(workflow, job_id):
-            raise HTTPException(status_code=409, detail="Planning job expired")
-        if workflow.status != WorkflowStatus.PENDING:
-            raise HTTPException(status_code=409, detail="Workflow is no longer pending")
-
-        workflow.generated_plan = candidate.model_dump(mode="json")
-        if job_id is not None:
-            workflow.plan_job = {"id": job_id, "status": "ready", "duration_ms": timing.duration_ms}
-
-    return candidate, timing.duration_ms
-
-
 @router.post("/{workflow_id}/plan", response_model=WorkflowPlan)
 def preview_workflow_plan(
     workflow_id: UUID,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
 ) -> WorkflowPlan:
-    plan, duration = _generate_workflow_plan(workflow_id, session)
+    try:
+        plan, duration = generate_workflow_plan(workflow_id, session)
+    except WorkflowNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except WorkflowRunConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except PlannerRejected as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except PlannerError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
     if duration is not None:
         response.headers["Server-Timing"] = f"planning;dur={duration:.2f}"
     return plan
@@ -272,16 +230,6 @@ class PlanJobView(BaseModel):
     error: str | None = None
 
 
-def _job_active(job: dict[str, object]) -> bool:
-    deadline = job.get("deadline")
-    return job.get("status") == "planning" and isinstance(deadline, (int, float)) and deadline > time()
-
-
-def _owns_plan_job(workflow: Workflow, job_id: str) -> bool:
-    job = workflow.plan_job or {}
-    return job.get("id") == job_id and _job_active(job)
-
-
 def _plan_job_view(workflow: Workflow) -> PlanJobView:
     job = workflow.plan_job or {}
     if workflow.generated_plan is not None:
@@ -291,7 +239,11 @@ def _plan_job_view(workflow: Workflow) -> PlanJobView:
             plan=WorkflowPlan.model_validate(workflow.generated_plan),
             duration_ms=duration if isinstance(duration, (int, float)) else None,
         )
-    if _job_active(job):
+    if (
+        job.get("status") == "planning"
+        and workflow.plan_job_run_at is not None
+        and workflow.status == WorkflowStatus.PENDING
+    ):
         return PlanJobView(status="planning")
     if job:
         error = job.get("error")
@@ -302,33 +254,10 @@ def _plan_job_view(workflow: Workflow) -> PlanJobView:
     return PlanJobView(status="idle")
 
 
-def _run_plan_job(workflow_id: UUID, job_id: str) -> None:
-    message = "Plan generation failed. Try Preview plan again."
-    try:
-        with Session(engine) as session:
-            _generate_workflow_plan(workflow_id, session, job_id)
-    except HTTPException as error:
-        if error.status_code == 422 and isinstance(error.detail, str):
-            message = error.detail
-    except Exception as error:
-        log_event("planning.job_error", error_type=type(error).__name__)
-    else:
-        return
-
-    try:
-        with Session(engine) as session, session.begin():
-            workflow = session.get(Workflow, workflow_id, with_for_update=True)
-            if workflow is not None and workflow.generated_plan is None and _owns_plan_job(workflow, job_id):
-                workflow.plan_job = {"id": job_id, "status": "failed", "error": message}
-    except Exception as error:
-        log_event("planning.job_error", error_type=type(error).__name__)
-
-
 @router.post("/{workflow_id}/plan-job", response_model=PlanJobView, status_code=202)
 def start_plan_job(
     workflow_id: UUID,
     response: Response,
-    background_tasks: BackgroundTasks,
     session: Annotated[Session, Depends(get_session)],
 ) -> PlanJobView:
     with session.begin():
@@ -344,10 +273,8 @@ def start_plan_job(
         if workflow.status != WorkflowStatus.PENDING:
             raise HTTPException(status_code=409, detail="Workflow is no longer pending")
 
-        job_id = uuid4().hex
-        workflow.plan_job = {"id": job_id, "status": "planning", "deadline": time() + 210}
+        enqueue_plan_job(session, workflow)
 
-    background_tasks.add_task(_run_plan_job, workflow_id, job_id)
     return PlanJobView(status="planning")
 
 

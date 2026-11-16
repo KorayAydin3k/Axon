@@ -148,4 +148,4 @@ The report includes per-case results, HTTP statuses, and plan latency. The comma
 
 Axon demonstrates controlled execution with simulated support data. The operator token authorizes approval and rejection in the local demo. Production deployment and multi-user authorization are outside the project's scope.
 
-Browser plan jobs execute inside the API process. PostgreSQL persists step checkpoints to support resuming interrupted workflow execution.
+Browser plan jobs are queued in PostgreSQL and run by the Compose planning worker. The worker can reclaim an interrupted job after its 210-second lease expires. Each claim has a new token, and only the active claim can save a result. Ollama timeouts are retried in the same job, with up to three total attempts. If the dashboard stops waiting, select **Preview plan** again to check the same job. PostgreSQL persists step checkpoints to support resuming interrupted workflow execution.

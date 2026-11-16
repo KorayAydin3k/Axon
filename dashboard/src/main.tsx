@@ -375,6 +375,9 @@ function App() {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 2500));
       job = await api<PlanJob>(jobPath, { cache: "no-store" });
     }
+    if (job.status === "planning") {
+      throw new Error("Planning is still in progress. Select Preview plan to check this job.");
+    }
     if (job.status !== "ready" || job.plan === null) {
       throw new Error(job.error ?? "Planning did not complete. Try Preview plan again.");
     }

@@ -30,6 +30,22 @@ services:
       timeout: 3s
       retries: 12
 
+  planning-worker:
+    build: .
+    profiles: ["local-ai"]
+    command: ["python", "-m", "app.planner.worker"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in .env}"
+      AXON_DATABASE_HOST: db
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen3:4b}"
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
   api:
     build: .
     profiles: ["local-ai"]
@@ -47,6 +63,8 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      planning-worker:
+        condition: service_started
     healthcheck:
       test:
         - CMD

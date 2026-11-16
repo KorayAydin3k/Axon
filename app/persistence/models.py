@@ -23,6 +23,9 @@ class Workflow(Base):
     plan_job: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )
+    plan_job_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
     execution_plan: Mapped[dict[str, object] | None] = mapped_column(
         JSON(none_as_null=True)
     )

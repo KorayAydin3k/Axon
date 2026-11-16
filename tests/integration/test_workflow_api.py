@@ -331,7 +331,7 @@ def test_workflow_list_filters_pending_approvals(scenario):
     ],
 )
 def test_planning_failure_logs_reason(scenario, monkeypatch, route, failure, error_code):
-    from app.api import workflows as workflows_api
+    from app.planner import jobs
     from app.planner import ollama_planner
 
     client, path, workflow_id, _ = scenario
@@ -342,17 +342,198 @@ def test_planning_failure_logs_reason(scenario, monkeypatch, route, failure, err
         return BytesIO(b'{"done":')
 
     monkeypatch.setattr(ollama_planner, "urlopen", fake_ollama)
-    log = Mock(wraps=workflows_api.log_event)
-    monkeypatch.setattr(workflows_api, "log_event", log)
+    log = Mock(wraps=jobs.log_event)
+    monkeypatch.setattr(jobs, "log_event", log)
 
     response = client.post(path + route)
     if route == "/plan":
         assert response.status_code == 502, response.text
     else:
         assert response.status_code == 202, response.text
+        claim = jobs.claim_plan_job(workflow_id)
+        assert claim is not None
+        jobs.run_plan_job(claim)
         job = client.get(path + route)
         assert job.status_code == 200, job.text
-        assert job.json()["status"] == "failed", job.text
+        expected_status = "planning" if error_code == "ollama_timeout" else "failed"
+        assert job.json()["status"] == expected_status, job.text
 
     failures = [entry.kwargs for entry in log.call_args_list if entry.args == ("planning.failed",)]
     assert failures == [{"workflow_id": str(workflow_id), "error_code": error_code}]
+
+
+def _expire_planning_lease(workflow_id):
+    from app.persistence.database import engine
+
+    with Session(engine) as session, session.begin():
+        workflow = session.get(Workflow, workflow_id, with_for_update=True)
+        assert workflow is not None
+        workflow.plan_job_run_at = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+def test_planning_job_recovers_after_worker_crash(scenario):
+    from subprocess import run
+    from sys import executable
+    from textwrap import dedent
+
+    from app.persistence.database import engine
+    from app.planner import jobs
+
+    client, path, workflow_id, _ = scenario
+    response = client.post(path + "/plan-job")
+    assert response.status_code == 202, response.text
+    assert client.get(path + "/plan-job").json()["status"] == "planning"
+
+    worker_script = dedent("""
+        import os
+        import sys
+        from uuid import UUID
+
+        from app.planner import jobs
+        from app.validation.plan import SupportAction, build_support_plan
+
+        def generate(_request):
+            if sys.argv[2] == "crash":
+                os._exit(73)
+            return build_support_plan(SupportAction.LIST, 2)
+
+        jobs.generate_plan = generate
+        claim = jobs.claim_plan_job(UUID(sys.argv[1]))
+        assert claim is not None
+        jobs.run_plan_job(claim)
+    """)
+    first = run(
+        [executable, "-c", worker_script, str(workflow_id), "crash"],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert first.returncode == 73, first.stderr
+    assert jobs.claim_plan_job(workflow_id) is None
+
+    with Session(engine) as session:
+        interrupted = session.get(Workflow, workflow_id)
+        assert interrupted is not None and interrupted.generated_plan is None
+        assert interrupted.plan_job["attempts"] == 1
+        job_id = interrupted.plan_job["id"]
+
+    _expire_planning_lease(workflow_id)
+    second = run(
+        [executable, "-c", worker_script, str(workflow_id), "recover"],
+        capture_output=True, text=True, timeout=20,
+    )
+    assert second.returncode == 0, second.stderr
+
+    response = client.get(path + "/plan-job")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ready"
+    assert [step["tool"] for step in response.json()["plan"]["steps"]] == ["list_tickets"]
+
+    with Session(engine) as session:
+        recovered = session.get(Workflow, workflow_id)
+        assert recovered is not None
+        assert recovered.plan_job["id"] == job_id
+        assert recovered.plan_job_run_at is None
+
+    repeated = client.post(path + "/plan-job")
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == response.json()
+
+
+def test_expired_planning_attempt_cannot_save_after_reassignment(scenario, monkeypatch):
+    from app.engine.workflow_engine import WorkflowRunConflict
+    from app.persistence.database import engine
+    from app.planner import jobs
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, workflow_id, _ = scenario
+    assert client.post(path + "/plan-job").status_code == 202
+    first = jobs.claim_plan_job(workflow_id)
+    assert first is not None
+    second = None
+
+    def generate_after_reassignment(_request):
+        nonlocal second
+        _expire_planning_lease(workflow_id)
+        second = jobs.claim_plan_job(workflow_id)
+        assert second is not None
+        assert second.job_id == first.job_id
+        assert second.token != first.token
+        return build_support_plan(SupportAction.LIST, 1)
+
+    monkeypatch.setattr(jobs, "generate_plan", generate_after_reassignment)
+    with Session(engine) as session:
+        with pytest.raises(WorkflowRunConflict, match="expired"):
+            jobs.generate_workflow_plan(workflow_id, session, first)
+
+    assert second is not None
+    assert client.get(path + "/plan-job").json()["status"] == "planning"
+    monkeypatch.setattr(jobs, "generate_plan", lambda _: build_support_plan(SupportAction.LIST, 2))
+    jobs.run_plan_job(second)
+    result = client.get(path + "/plan-job").json()
+    assert result["status"] == "ready"
+    assert result["plan"]["steps"][0]["arguments"]["limit"] == 2
+
+
+def test_interrupted_planning_stops_at_attempt_limit(scenario):
+    from app.planner import jobs
+
+    client, path, workflow_id, _ = scenario
+    assert client.post(path + "/plan-job").status_code == 202
+    for _ in range(jobs.MAX_ATTEMPTS):
+        assert jobs.claim_plan_job(workflow_id) is not None
+        _expire_planning_lease(workflow_id)
+
+    assert jobs.claim_plan_job(workflow_id) is None
+    result = client.get(path + "/plan-job").json()
+    assert result["status"] == "failed"
+    assert "interrupted" in result["error"]
+    assert client.post(path + "/plan-job").status_code == 202
+    assert jobs.claim_plan_job(workflow_id) is not None
+
+
+@pytest.mark.parametrize("recover", [True, False], ids=["ready-on-retry", "exhausted"])
+def test_worker_retries_ollama_timeout(scenario, monkeypatch, recover):
+    from app.persistence.database import engine
+    from app.planner import jobs
+    from app.planner.ollama_planner import PlannerError
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, workflow_id, _ = scenario
+    assert client.post(path + "/plan-job").status_code == 202
+    monkeypatch.setattr(jobs, "TIMEOUT_RETRY_DELAY", timedelta(minutes=1))
+    calls = 0
+
+    def generate(_request):
+        nonlocal calls
+        calls += 1
+        if recover and calls == 2:
+            return build_support_plan(SupportAction.LIST, 2)
+        raise PlannerError("Could not reach the local Ollama service", code="ollama_timeout")
+
+    monkeypatch.setattr(jobs, "generate_plan", generate)
+    expected_attempts = 2 if recover else jobs.MAX_ATTEMPTS
+    job_id = None
+    for attempt in range(1, expected_attempts + 1):
+        claim = jobs.claim_plan_job(workflow_id)
+        assert claim is not None
+        job_id = job_id or claim.job_id
+        assert claim.job_id == job_id
+        jobs.run_plan_job(claim)
+        if attempt < expected_attempts:
+            assert client.get(path + "/plan-job").json()["status"] == "planning"
+            assert client.post(path + "/plan-job").status_code == 202
+            assert jobs.claim_plan_job(workflow_id) is None
+            _expire_planning_lease(workflow_id)
+
+    result = client.get(path + "/plan-job").json()
+    assert result["status"] == ("ready" if recover else "failed")
+    if recover:
+        assert result["plan"]["steps"][0]["arguments"]["limit"] == 2
+    else:
+        assert "timed out" in result["error"]
+    assert calls == expected_attempts
+
+    with Session(engine) as session:
+        workflow = session.get(Workflow, workflow_id)
+        assert workflow is not None
+        assert workflow.plan_job["id"] == job_id
+        assert workflow.plan_job_run_at is None

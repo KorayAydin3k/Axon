@@ -16,7 +16,8 @@ class StepSpec(PlanModel):
     depends_on: tuple[StepName, ...]
 
 
-TicketLimit = Annotated[int, Field(strict=True, ge=1, le=10)]
+MAX_TICKET_LIMIT = 10
+TicketLimit = Annotated[int, Field(strict=True, ge=1, le=MAX_TICKET_LIMIT)]
 
 
 class ListTicketsArguments(PlanModel):

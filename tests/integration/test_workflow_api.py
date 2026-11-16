@@ -651,3 +651,92 @@ def test_worker_retries_ollama_timeout(scenario, monkeypatch, recover):
         assert workflow is not None
         assert workflow.plan_job["id"] == job_id
         assert workflow.plan_job_run_at is None
+
+
+@pytest.mark.parametrize(
+    "invalid_output",
+    [
+        pytest.param([{"id": "T-102", "priority": "5", "issue": "Checkout"}], id="wrong-type"),
+        pytest.param(
+            [{"id": "T-102", "priority": 5, "issue": "Checkout", "extra": "unexpected"}],
+            id="extra-field",
+        ),
+        pytest.param(
+            [{"id": f"T-{index}", "priority": 1, "issue": "Test"} for index in range(4)],
+            id="over-requested-limit",
+        ),
+    ],
+)
+def test_invalid_ticket_output_is_not_checkpointed(scenario, monkeypatch, invalid_output):
+    from app.persistence.database import engine
+
+    client, path, workflow_id, _ = scenario
+    summarize = Mock(side_effect=AssertionError("Invalid tickets reached the next tool"))
+    monkeypatch.setitem(SUPPORT_TOOLS, "list_tickets", lambda *args: invalid_output)
+    monkeypatch.setitem(SUPPORT_TOOLS, "summarize_tickets", summarize)
+
+    response = client.post(path + "/run", params={"plan": "support_followup"})
+    assert response.status_code == 500, response.text
+    assert client.get(path).json()["status"] == "FAILED"
+    summarize.assert_not_called()
+    assert task_count(workflow_id) == 0
+
+    with Session(engine) as session:
+        assert session.scalar(
+            select(WorkflowStep.name).where(WorkflowStep.workflow_id == workflow_id)
+        ) is None
+
+
+def test_invalid_write_output_rolls_back_tasks(scenario, monkeypatch):
+    from app.persistence.database import engine
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+    assert approved.status_code == 200, approved.text
+    real_write = SUPPORT_TOOLS["create_followup_tasks"]
+
+    def write_with_invalid_output(session, workflow_id, inputs, arguments):
+        inputs[0][0]["summary"] = "Different from the approved summary"
+        output = real_write(session, workflow_id, inputs, arguments)
+        session.flush()
+        return output
+
+    monkeypatch.setitem(SUPPORT_TOOLS, "create_followup_tasks", write_with_invalid_output)
+    response = client.post(path + "/run")
+    assert response.status_code == 500, response.text
+    assert client.get(path).json()["status"] == "FAILED"
+    assert task_count(workflow_id) == 0
+    with Session(engine) as session:
+        assert session.scalar(
+            select(WorkflowStep.name).where(
+                WorkflowStep.workflow_id == workflow_id,
+                WorkflowStep.tool == "create_followup_tasks",
+            )
+        ) is None
+
+
+def test_invalid_checkpoint_blocks_resume(scenario, monkeypatch):
+    from app.persistence.database import engine
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+    assert approved.status_code == 200, approved.text
+
+    with Session(engine) as session, session.begin():
+        checkpoint = session.scalar(
+            select(WorkflowStep).where(
+                WorkflowStep.workflow_id == workflow_id,
+                WorkflowStep.tool == "summarize_tickets",
+            )
+        )
+        assert checkpoint is not None
+        checkpoint.output = [{"ticket_id": "T-102", "summary": False}]
+
+    write = Mock(side_effect=AssertionError("Invalid checkpoint reached the write tool"))
+    monkeypatch.setitem(SUPPORT_TOOLS, "create_followup_tasks", write)
+    response = client.post(path + "/run")
+    assert response.status_code == 409, response.text
+    write.assert_not_called()
+    assert task_count(workflow_id) == 0

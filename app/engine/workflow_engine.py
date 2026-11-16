@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from graphlib import TopologicalSorter
@@ -17,6 +18,8 @@ from app.tools.registry import (
     PermanentToolError,
     RetryableToolError,
     SUPPORT_TOOLS,
+    validate_tool_inputs,
+    validate_tool_output,
     ToolOutput,
 )
 from app.validation.plan import (
@@ -237,7 +240,13 @@ def _execute_step(
             workflow = _locked_workflow(session, workflow_id)
             saved = session.get(WorkflowStep, (workflow_id, step.name))
             if saved is not None:
-                return saved.output
+                try:
+                    checked_inputs = validate_tool_inputs(step.tool, inputs)
+                    return validate_tool_output(step, saved.output, checked_inputs)
+                except PermanentToolError as error:
+                    raise WorkflowRunConflict(
+                        f"Stored output for step '{step.name}' is invalid"
+                    ) from error
 
             if workflow.status not in (
                 WorkflowStatus.RUNNING,
@@ -247,8 +256,13 @@ def _execute_step(
                 raise WorkflowRunConflict(f"Workflow is already {workflow.status}")
 
             decision = require_tool_permission(step.tool)
+            try:
+                checked_inputs = validate_tool_inputs(step.tool, inputs)
+            except PermanentToolError as error:
+                raise WorkflowRunConflict(f"Inputs for step '{step.name}' are invalid") from error
+
             if decision is ToolDecision.REQUIRE_APPROVAL:
-                if not _approval_granted(session, workflow, step, inputs, plan_hash):
+                if not _approval_granted(session, workflow, step, checked_inputs, plan_hash):
                     return None
             if workflow.status == WorkflowStatus.WAITING_FOR_APPROVAL:
                 raise WorkflowRunConflict("Workflow is waiting for approval")
@@ -289,8 +303,10 @@ def _execute_step(
                         session.begin_nested(),
                     ):
                         output = SUPPORT_TOOLS[step.tool](
-                            session, workflow_id, inputs, step.arguments.model_dump()
+                            session, workflow_id, deepcopy(checked_inputs),
+                            step.arguments.model_dump(),
                         )
+                        output = validate_tool_output(step, output, checked_inputs)
                         session.add(
                             WorkflowStep(
                                 workflow_id=workflow_id,

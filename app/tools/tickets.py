@@ -1,10 +1,18 @@
-from typing import TypedDict
+from typing import Annotated
+
+from pydantic import ConfigDict, StringConstraints, with_config
+from typing_extensions import TypedDict
 
 
+TicketId = Annotated[str, StringConstraints(min_length=1, max_length=32)]
+TicketText = Annotated[str, StringConstraints(min_length=1)]
+
+
+@with_config(ConfigDict(extra="forbid"))
 class Ticket(TypedDict):
-    id: str
+    id: TicketId
     priority: int
-    issue: str
+    issue: TicketText
 
 
 _SAMPLE_TICKETS: tuple[Ticket, ...] = (

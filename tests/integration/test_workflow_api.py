@@ -105,6 +105,72 @@ def test_approval_is_required_and_bound_to_plan(
     assert task_count(workflow_id) == expected_tasks
 
 
+@pytest.mark.parametrize(
+    "action, opposite_action, decision, expected_status",
+    [
+        ("approve", "reject", "approved", "RUNNING"),
+        ("reject", "approve", "rejected", "CANCELLED"),
+    ],
+)
+def test_approval_replay_preserves_decision_and_audit(
+    scenario, action, opposite_action, decision, expected_status,
+):
+    from app.persistence.database import engine
+    from app.persistence.models import WorkflowApproval
+
+    client, path, workflow_id, headers = scenario
+    digest = request_approval(client, path)
+    decision_path = f"{path}/{action}"
+    payload = {"plan_hash": digest}
+
+    def approval_record():
+        with Session(engine) as session:
+            approval = session.get(WorkflowApproval, (workflow_id, digest))
+            assert approval is not None
+            return approval.decision, approval.decided_at, approval.step_name
+
+    first = client.post(decision_path, json=payload, headers=headers)
+    assert first.status_code == 200, first.text
+    assert first.json()["status"] == expected_status
+    saved_record = approval_record()
+    assert saved_record[0] == decision
+    assert saved_record[1] is not None
+
+    response = client.get(path + "/events")
+    assert response.status_code == 200, response.text
+    original_events = response.json()
+    decisions = [event for event in original_events if event["details"].get("decision")]
+    assert len(decisions) == 1
+    event = decisions[0]
+    assert event["from_status"] == "WAITING_FOR_APPROVAL"
+    assert event["to_status"] == expected_status
+    assert event["details"]["plan_hash"] == digest
+    assert event["details"]["step"] == saved_record[2]
+    assert event["details"]["decision"] == decision
+
+    replay = client.post(decision_path, json=payload, headers=headers)
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["status"] == expected_status
+
+    conflict = client.post(f"{path}/{opposite_action}", json=payload, headers=headers)
+    assert conflict.status_code == 409, conflict.text
+
+    denied = client.post(
+        decision_path, json=payload, headers={"X-Axon-Approval-Token": "invalid-token"}
+    )
+    assert denied.status_code == 403, denied.text
+    assert approval_record() == saved_record
+
+    response = client.get(path + "/events")
+    assert response.status_code == 200, response.text
+    assert response.json() == original_events
+
+    workflow = client.get(path)
+    assert workflow.status_code == 200, workflow.text
+    assert workflow.json()["status"] == expected_status
+    assert task_count(workflow_id) == 0
+
+
 def test_concurrent_resume_creates_one_task_per_ticket(scenario, monkeypatch):
     from app.api import workflows as workflows_api
     from app.persistence.database import engine

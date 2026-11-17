@@ -31,6 +31,13 @@ stage_duration = Histogram(
     buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 90, 180),
     registry=metrics_registry,
 )
+tool_duration = Histogram(
+    "axon_tool_duration_seconds",
+    "Time spent invoking an Axon tool and validating its output.",
+    labelnames=("tool", "outcome"),
+    buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20),
+    registry=metrics_registry,
+)
 
 
 def log_event(event: str, **fields: object) -> None:
@@ -72,4 +79,41 @@ def observe_stage(
                 workflow_id=str(workflow_id),
                 outcome=outcome,
                 duration_ms=measurement.duration_ms,
+            )
+
+
+@contextmanager
+def observe_tool(
+    workflow_id: UUID, tool: str, step_name: str, position: int,
+) -> Iterator[None]:
+    with trace_span(
+        "workflow.tool",
+        attributes={
+            "axon.workflow_id": str(workflow_id),
+            "axon.tool": tool,
+            "axon.step.name": step_name,
+            "axon.step.position": position,
+        },
+    ):
+        started = perf_counter()
+        outcome = "ok"
+        error_type = None
+        try:
+            yield
+        except BaseException as error:
+            outcome = "error"
+            error_type = type(error).__name__
+            raise
+        finally:
+            seconds = perf_counter() - started
+            tool_duration.labels(tool=tool, outcome=outcome).observe(seconds)
+            log_event(
+                "workflow.tool",
+                workflow_id=str(workflow_id),
+                tool=tool,
+                step=step_name,
+                position=position,
+                outcome=outcome,
+                duration_ms=round(seconds * 1000, 2),
+                error_type=error_type,
             )

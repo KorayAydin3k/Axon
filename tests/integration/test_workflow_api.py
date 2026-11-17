@@ -884,3 +884,64 @@ def test_planning_worker_preserves_enqueue_request_id(scenario, monkeypatch):
         workflow = session.get(Workflow, workflow_id)
         assert workflow is not None
         assert workflow.plan_job["request_id"] == request_id
+
+
+def test_tool_attempt_metrics_include_retries_and_exclude_checkpoint_reuse(scenario, monkeypatch):
+    from json import loads
+    from logging import Handler
+
+    from app.observability.telemetry import logger, metrics_registry
+    from app.tools.registry import RetryableToolError, SUPPORT_TOOLS
+
+    client, path, workflow_id, headers = scenario
+    series = (
+        ("list_tickets", "error"),
+        ("list_tickets", "ok"),
+        ("summarize_tickets", "ok"),
+        ("create_followup_tasks", "ok"),
+    )
+    records = []
+    attempts = 0
+    real_list = SUPPORT_TOOLS["list_tickets"]
+
+    def list_with_retry(*args):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RetryableToolError("Transient test failure")
+        return real_list(*args)
+
+    def counts():
+        return tuple(
+            metrics_registry.get_sample_value(
+                "axon_tool_duration_seconds_count", {"tool": tool, "outcome": outcome}
+            ) or 0
+            for tool, outcome in series
+        )
+
+    class Collector(Handler):
+        def emit(self, record):
+            event = loads(record.getMessage())
+            if event["event"] == "workflow.tool" and event["workflow_id"] == str(workflow_id):
+                records.append(event)
+
+    before = counts()
+    monkeypatch.setitem(SUPPORT_TOOLS, "list_tickets", list_with_retry)
+    collector = Collector()
+    logger.addHandler(collector)
+    try:
+        digest = request_approval(client, path)
+        assert tuple(count - initial for count, initial in zip(counts(), before)) == (1, 1, 1, 0)
+
+        approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+        assert approved.status_code == 200, approved.text
+        resumed = client.post(path + "/run")
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "COMPLETED"
+    finally:
+        logger.removeHandler(collector)
+
+    assert tuple(count - initial for count, initial in zip(counts(), before)) == (1, 1, 1, 1)
+    assert [(event["tool"], event["outcome"]) for event in records] == list(series)
+    assert records[0]["error_type"] == "RetryableToolError"
+    assert all(event["request_id"] and event["duration_ms"] >= 0 for event in records)

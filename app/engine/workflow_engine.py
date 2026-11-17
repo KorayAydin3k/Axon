@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus, transition
-from app.observability.tracing import trace_span
+from app.observability.telemetry import observe_tool
 from app.persistence.models import Workflow, WorkflowApproval, WorkflowEvent, WorkflowStep
 from app.tools.registry import (
     PermanentToolError,
@@ -295,18 +295,13 @@ def _execute_step(
 
             if wait_seconds == 0:
                 try:
-                    with (
-                        trace_span(
-                            "workflow.tool",
-                            attributes={"axon.tool": step.tool, "axon.step.position": position},
-                        ),
-                        session.begin_nested(),
-                    ):
-                        output = SUPPORT_TOOLS[step.tool](
-                            session, workflow_id, deepcopy(checked_inputs),
-                            step.arguments.model_dump(),
-                        )
-                        output = validate_tool_output(step, output, checked_inputs)
+                    with session.begin_nested():
+                        with observe_tool(workflow_id, step.tool, step.name, position):
+                            output = SUPPORT_TOOLS[step.tool](
+                                session, workflow_id, deepcopy(checked_inputs),
+                                step.arguments.model_dump(),
+                            )
+                            output = validate_tool_output(step, output, checked_inputs)
                         session.add(
                             WorkflowStep(
                                 workflow_id=workflow_id,

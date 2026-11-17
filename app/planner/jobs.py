@@ -134,13 +134,10 @@ def generate_workflow_plan(
 
         workflow.generated_plan = candidate.model_dump(mode="json")
         job = workflow.plan_job or {}
+        ready_job: dict[str, object] = {"status": "ready", "duration_ms": timing.duration_ms}
         if job.get("status") == "planning":
-            workflow.plan_job = {
-                "id": job.get("id"),
-                "status": "ready",
-                "duration_ms": timing.duration_ms,
-                "request_id": job.get("request_id"),
-            }
+            ready_job.update(id=job.get("id"), request_id=job.get("request_id"))
+        workflow.plan_job = ready_job
         workflow.plan_job_run_at = None
 
     return candidate, timing.duration_ms

@@ -486,6 +486,19 @@ small, time {
 }
 .metrics dt { color: var(--muted); font-size: 0.78rem; }
 .metrics dd { margin: 4px 0 0; font: 650 1.16rem var(--mono); }
+.tool-timings { margin-top: 14px; }
+.tool-timings h3 { margin: 0 0 6px; font-size: 0.86rem; }
+.tool-timings dl { margin: 0; }
+.tool-timings dl > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+}
+.tool-timings dt { overflow-wrap: anywhere; }
+.tool-timings dd { margin: 0; color: var(--muted); font: 0.8rem var(--mono); }
 .result-heading {
   flex-wrap: wrap;
   margin-top: 12px;

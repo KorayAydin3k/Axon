@@ -296,7 +296,7 @@ def _execute_step(
             if wait_seconds == 0:
                 try:
                     with session.begin_nested():
-                        with observe_tool(workflow_id, step.tool, step.name, position):
+                        with observe_tool(workflow_id, step.tool, step.name, position) as timing:
                             output = SUPPORT_TOOLS[step.tool](
                                 session, workflow_id, deepcopy(checked_inputs),
                                 step.arguments.model_dump(),
@@ -309,6 +309,7 @@ def _execute_step(
                                 tool=step.tool,
                                 position=position,
                                 output=output,
+                                duration_ms=timing.duration_ms,
                             )
                         )
                 except (RetryableToolError, TimeoutError, PermanentToolError) as error:

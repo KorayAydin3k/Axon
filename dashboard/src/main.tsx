@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 
 type Workflow = { id: string; request: string; status: string };
+type StepTiming = { name: string; tool: string; duration_ms: number | null };
+type WorkflowDetails = Workflow & { step_timings: StepTiming[] };
 type Step = {
   name: string;
   tool: string;
@@ -215,6 +217,7 @@ function App() {
   const [error, setError] = useState("");
   const [planningMs, setPlanningMs] = useState<number | null>(null);
   const [executionMs, setExecutionMs] = useState<number | null>(null);
+  const [stepTimings, setStepTimings] = useState<StepTiming[]>([]);
   const creation = useRef<{ text: string; key: string } | null>(null);
 
   const path = workflow ? `/workflows/${workflow.id}` : "";
@@ -282,6 +285,7 @@ function App() {
     setToken("");
     setPlanningMs(null);
     setExecutionMs(null);
+    setStepTimings([]);
   }
 
   const loadSavedWorkflow = useCallback(async (
@@ -293,13 +297,14 @@ function App() {
     const savedPath = `/workflows/${id}`;
     const options: RequestInit = { cache: "no-store", signal };
     const [next, history, planJob] = await Promise.all([
-      api<Workflow>(savedPath, options),
+      api<WorkflowDetails>(savedPath, options),
       api<WorkflowEvent[]>(savedPath + "/events", options),
       api<PlanJob>(savedPath + "/plan-job", options).catch(() => null),
     ]);
     if (signal?.aborted) return;
 
     setWorkflow(next);
+    setStepTimings(next.step_timings);
     setText(next.request);
     setEvents(history);
     setToken("");
@@ -359,10 +364,11 @@ function App() {
 
   async function refresh() {
     const [next, history] = await Promise.all([
-      api<Workflow>(path),
+      api<WorkflowDetails>(path, { cache: "no-store" }),
       api<WorkflowEvent[]>(path + "/events"),
     ]);
     setWorkflow(next);
+    setStepTimings(next.step_timings);
     setEvents(history);
   }
 
@@ -387,13 +393,14 @@ function App() {
   }
 
   async function run() {
-    const next = await api<Workflow>(path + "/run?plan=generated", { method: "POST" }, (response) => {
+    const next = await api<WorkflowDetails>(path + "/run?plan=generated", { method: "POST" }, (response) => {
       const duration = response.headers.get("Server-Timing")?.match(/(?:^|,\s*)execution;dur=(\d+(?:\.\d+)?)(?:[;,]|$)/)?.[1];
       if (duration !== undefined) {
         setExecutionMs((previous) => (previous ?? 0) + Number(duration));
       }
     });
     setWorkflow(next);
+    setStepTimings(next.step_timings);
     setEvents(await api<WorkflowEvent[]>(path + "/events"));
   }
 
@@ -604,6 +611,21 @@ function App() {
                 <div><dt>Execution</dt><dd>{durationText(executionMs)}</dd></div>
               </dl>
               <small>Execution totals Run and Resume calls in this tab.</small>
+              {stepTimings.length > 0 && (
+                <section className="tool-timings" aria-labelledby="tool-timings-title">
+                  <h3 id="tool-timings-title">Completed tool steps</h3>
+                  <dl>
+                    {stepTimings.map((step) => (
+                      <div key={step.name}>
+                        <dt><code>{step.tool}</code></dt>
+                        <dd>
+                          {step.duration_ms === null ? "Not recorded" : durationText(step.duration_ms)}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              )}
               {completed ? (
                 <>
                   <div className="result-heading">

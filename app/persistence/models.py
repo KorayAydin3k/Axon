@@ -60,6 +60,7 @@ class WorkflowStep(Base):
     tool: Mapped[str] = mapped_column(String(64))
     position: Mapped[int]
     output: Mapped[list[dict[str, object]]] = mapped_column(JSON)
+    duration_ms: Mapped[float | None]
 
 
 class FollowupTask(Base):

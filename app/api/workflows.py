@@ -25,7 +25,7 @@ from app.engine.workflow_engine import (
 )
 from app.observability.telemetry import log_event, observe_stage
 from app.persistence.database import engine
-from app.persistence.models import Workflow, WorkflowEvent
+from app.persistence.models import Workflow, WorkflowEvent, WorkflowStep
 from app.planner.jobs import enqueue_plan_job, generate_workflow_plan
 from app.planner.ollama_planner import PlannerError, PlannerRejected
 from app.validation.plan import WorkflowPlan
@@ -47,6 +47,32 @@ class WorkflowResponse(BaseModel):
     request: str
     status: str
     created_at: datetime
+
+
+class WorkflowStepTiming(BaseModel):
+    name: str
+    tool: str
+    duration_ms: float | None
+
+
+class WorkflowDetails(WorkflowResponse):
+    step_timings: list[WorkflowStepTiming]
+
+
+def _workflow_details(session: Session, workflow: Workflow) -> WorkflowDetails:
+    response = WorkflowResponse.model_validate(workflow)
+    statement = (
+        select(WorkflowStep.name, WorkflowStep.tool, WorkflowStep.duration_ms)
+        .where(WorkflowStep.workflow_id == response.id)
+        .order_by(WorkflowStep.position)
+    )
+    return WorkflowDetails(
+        **response.model_dump(),
+        step_timings=[
+            WorkflowStepTiming.model_validate(row)
+            for row in session.execute(statement).mappings()
+        ],
+    )
 
 
 def get_session() -> Iterator[Session]:
@@ -143,14 +169,14 @@ def list_workflows(
     )
 
 
-@router.get("/{workflow_id}", response_model=WorkflowResponse)
+@router.get("/{workflow_id}", response_model=WorkflowDetails)
 def get_workflow(
     workflow_id: UUID, session: Annotated[Session, Depends(get_session)]
-) -> Workflow:
+) -> WorkflowDetails:
     workflow = session.get(Workflow, workflow_id)
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return workflow
+    return _workflow_details(session, workflow)
 
 
 class WorkflowEventResponse(BaseModel):
@@ -163,13 +189,13 @@ class WorkflowEventResponse(BaseModel):
     created_at: datetime
 
 
-@router.post("/{workflow_id}/run", response_model=WorkflowResponse)
+@router.post("/{workflow_id}/run", response_model=WorkflowDetails)
 def run_workflow(
     workflow_id: UUID,
     response: Response,
     session: Annotated[Session, Depends(get_session)],
     plan: PlanSelection | None = None,
-) -> WorkflowResponse:
+) -> WorkflowDetails:
     try:
         with observe_stage("execution", workflow_id) as timing:
             workflow = execute_workflow(session, workflow_id, plan)
@@ -184,7 +210,7 @@ def run_workflow(
     except WorkflowToolFailed as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
     response.headers["Server-Timing"] = f"execution;dur={timing.duration_ms:.2f}"
-    return WorkflowResponse.model_validate(workflow)
+    return _workflow_details(session, workflow)
 
 
 @router.get("/{workflow_id}/events", response_model=list[WorkflowEventResponse])

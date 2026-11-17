@@ -85,7 +85,7 @@ def observe_stage(
 @contextmanager
 def observe_tool(
     workflow_id: UUID, tool: str, step_name: str, position: int,
-) -> Iterator[None]:
+) -> Iterator[StageMeasurement]:
     with trace_span(
         "workflow.tool",
         attributes={
@@ -98,14 +98,16 @@ def observe_tool(
         started = perf_counter()
         outcome = "ok"
         error_type = None
+        measurement = StageMeasurement()
         try:
-            yield
+            yield measurement
         except BaseException as error:
             outcome = "error"
             error_type = type(error).__name__
             raise
         finally:
             seconds = perf_counter() - started
+            measurement.duration_ms = round(seconds * 1000, 2)
             tool_duration.labels(tool=tool, outcome=outcome).observe(seconds)
             log_event(
                 "workflow.tool",
@@ -114,6 +116,6 @@ def observe_tool(
                 step=step_name,
                 position=position,
                 outcome=outcome,
-                duration_ms=round(seconds * 1000, 2),
+                duration_ms=measurement.duration_ms,
                 error_type=error_type,
             )

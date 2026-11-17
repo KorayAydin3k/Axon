@@ -945,3 +945,38 @@ def test_tool_attempt_metrics_include_retries_and_exclude_checkpoint_reuse(scena
     assert [(event["tool"], event["outcome"]) for event in records] == list(series)
     assert records[0]["error_type"] == "RetryableToolError"
     assert all(event["request_id"] and event["duration_ms"] >= 0 for event in records)
+
+
+def test_workflow_timings_survive_resume_and_reload(scenario, monkeypatch):
+    from app.planner import jobs
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, _, headers = scenario
+    monkeypatch.setattr(jobs, "generate_plan", lambda _: build_support_plan(SupportAction.FOLLOWUP, 3))
+    assert client.get(path).json()["step_timings"] == []
+
+    planned = client.post(path + "/plan")
+    assert planned.status_code == 200, planned.text
+    plan_ms = float(planned.headers["Server-Timing"].split("=", 1)[1])
+
+    paused = client.post(path + "/run", params={"plan": "generated"})
+    assert paused.status_code == 200, paused.text
+    assert paused.json()["status"] == "WAITING_FOR_APPROVAL"
+    timings = paused.json()["step_timings"]
+    assert [step["tool"] for step in timings] == ["list_tickets", "summarize_tickets"]
+    assert all(step["duration_ms"] >= 0 for step in timings)
+    assert client.get(path).json()["step_timings"] == timings
+
+    digest = client.get(path + "/events").json()[-1]["details"]["plan_hash"]
+    approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+    assert approved.status_code == 200, approved.text
+    resumed = client.post(path + "/run")
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == "COMPLETED"
+    completed_steps = resumed.json()["step_timings"]
+    assert completed_steps[:2] == timings
+    assert len(completed_steps) == 3
+    assert completed_steps[-1]["tool"] == "create_followup_tasks"
+    assert completed_steps[-1]["duration_ms"] >= 0
+    assert client.get(path).json()["step_timings"] == completed_steps
+    assert client.get(path + "/plan-job").json()["duration_ms"] == plan_ms

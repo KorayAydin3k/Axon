@@ -809,3 +809,78 @@ def test_invalid_checkpoint_blocks_resume(scenario, monkeypatch):
     assert response.status_code == 409, response.text
     write.assert_not_called()
     assert task_count(workflow_id) == 0
+
+
+def test_planning_worker_preserves_enqueue_request_id(scenario, monkeypatch):
+    from json import loads
+    from logging import Handler
+
+    from app.observability.telemetry import current_request_id, logger
+    from app.persistence.database import engine
+    from app.planner import jobs
+    from app.planner.ollama_planner import PlannerError
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, workflow_id, _ = scenario
+    records = []
+    attempts = 0
+
+    class Collector(Handler):
+        def emit(self, record):
+            records.append(loads(record.getMessage()))
+
+    def generate(_request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PlannerError("mock timeout", code="ollama_timeout")
+        return build_support_plan(SupportAction.LIST, 2)
+
+    monkeypatch.setattr(jobs, "generate_plan", generate)
+    collector = Collector()
+    logger.addHandler(collector)
+    try:
+        enqueued = client.post(path + "/plan-job")
+        assert enqueued.status_code == 202, enqueued.text
+        (enqueue_log,) = [
+            record for record in records
+            if record["event"] == "http.request" and record.get("status_code") == 202
+        ]
+        request_id = enqueue_log["request_id"]
+        assert request_id
+
+        first = jobs.claim_plan_job(workflow_id)
+        assert first is not None and first.request_id == request_id
+        context = current_request_id.set("existing-worker-context")
+        try:
+            jobs.run_plan_job(first)
+            assert current_request_id.get() == "existing-worker-context"
+
+            _expire_planning_lease(workflow_id)
+            second = jobs.claim_plan_job(workflow_id)
+            assert second is not None and second.request_id == request_id
+            assert second.job_id == first.job_id
+            jobs.run_plan_job(second)
+            assert current_request_id.get() == "existing-worker-context"
+        finally:
+            current_request_id.reset(context)
+    finally:
+        logger.removeHandler(collector)
+
+    planning_events = {"planning.failed", "workflow.stage", "planning.retry_scheduled"}
+    job_logs = [
+        record for record in records
+        if record["event"] in planning_events and record.get("workflow_id") == str(workflow_id)
+    ]
+    assert [record["event"] for record in job_logs] == [
+        "planning.failed", "workflow.stage", "planning.retry_scheduled", "workflow.stage",
+    ]
+    assert all(record["request_id"] == request_id for record in job_logs)
+    assert [record["outcome"] for record in job_logs if record["event"] == "workflow.stage"] == [
+        "error", "ok",
+    ]
+    assert client.get(path + "/plan-job").json()["status"] == "ready"
+    with Session(engine) as session:
+        workflow = session.get(Workflow, workflow_id)
+        assert workflow is not None
+        assert workflow.plan_job["request_id"] == request_id

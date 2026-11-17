@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.engine.state_machine import WorkflowStatus
 from app.engine.workflow_engine import WorkflowNotFound, WorkflowRunConflict
-from app.observability.telemetry import log_event, observe_stage
+from app.observability.telemetry import current_request_id, log_event, observe_stage
 from app.persistence.database import engine
 from app.persistence.models import Workflow
 from app.planner.ollama_planner import PlannerError, PlannerRejected, generate_plan
@@ -25,10 +25,16 @@ class PlanJobClaim:
     workflow_id: UUID
     job_id: str
     token: str
+    request_id: str | None = None
 
 
 def enqueue_plan_job(session: Session, workflow: Workflow) -> None:
-    workflow.plan_job = {"id": uuid4().hex, "status": "planning", "attempts": 0}
+    workflow.plan_job = {
+        "id": uuid4().hex,
+        "status": "planning",
+        "attempts": 0,
+        "request_id": current_request_id.get(),
+    }
     workflow.plan_job_run_at = session.scalar(select(func.clock_timestamp()))
 
 
@@ -66,15 +72,18 @@ def claim_plan_job(workflow_id: UUID | None = None) -> PlanJobClaim | None:
             return None
 
         token = uuid4().hex
+        request_id = job.get("request_id")
+        request_id = request_id if isinstance(request_id, str) else None
         now = session.scalar(select(func.clock_timestamp()))
         workflow.plan_job = {
             "id": job_id,
             "status": "planning",
             "attempts": attempt,
             "claim_token": token,
+            "request_id": request_id,
         }
         workflow.plan_job_run_at = now + CLAIM_LEASE
-        return PlanJobClaim(workflow.id, job_id, token)
+        return PlanJobClaim(workflow.id, job_id, token, request_id)
 
 
 def _owns_plan_job(session: Session, workflow: Workflow, claim: PlanJobClaim) -> bool:
@@ -130,6 +139,7 @@ def generate_workflow_plan(
                 "id": job.get("id"),
                 "status": "ready",
                 "duration_ms": timing.duration_ms,
+                "request_id": job.get("request_id"),
             }
         workflow.plan_job_run_at = None
 
@@ -137,11 +147,25 @@ def generate_workflow_plan(
 
 
 def _fail_plan_job(workflow: Workflow, job_id: str, message: str) -> None:
-    workflow.plan_job = {"id": job_id, "status": "failed", "error": message}
+    previous = workflow.plan_job or {}
+    workflow.plan_job = {
+        "id": job_id,
+        "status": "failed",
+        "error": message,
+        "request_id": previous.get("request_id"),
+    }
     workflow.plan_job_run_at = None
 
 
 def run_plan_job(claim: PlanJobClaim) -> None:
+    context = current_request_id.set(claim.request_id)
+    try:
+        _run_claimed_plan_job(claim)
+    finally:
+        current_request_id.reset(context)
+
+
+def _run_claimed_plan_job(claim: PlanJobClaim) -> None:
     retry_timeout = False
     try:
         with Session(engine) as session:
@@ -170,7 +194,12 @@ def run_plan_job(claim: PlanJobClaim) -> None:
             and attempts < MAX_ATTEMPTS
         ):
             now = session.scalar(select(func.clock_timestamp()))
-            workflow.plan_job = {"id": claim.job_id, "status": "planning", "attempts": attempts}
+            workflow.plan_job = {
+                "id": claim.job_id,
+                "status": "planning",
+                "attempts": attempts,
+                "request_id": claim.request_id,
+            }
             workflow.plan_job_run_at = now + TIMEOUT_RETRY_DELAY
         else:
             _fail_plan_job(workflow, claim.job_id, message)

@@ -15,9 +15,11 @@ def main() -> None:
                 run_plan_job(claim)
                 continue
         except Exception as error:
-            fields = {"error_type": type(error).__name__}
+            fields: dict[str, object] = {"error_type": type(error).__name__}
             if claim is not None:
-                fields.update(workflow_id=str(claim.workflow_id), job_id=claim.job_id)
+                fields.update(
+                    workflow_id=str(claim.workflow_id), job_id=claim.job_id, request_id=claim.request_id
+                )
             log_event("planning.worker_error", **fields)
         sleep(1)
 

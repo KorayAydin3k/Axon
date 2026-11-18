@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: axon-api
+    static_configs:
+      - targets: ["api:8000"]
+
+  - job_name: axon-planning-worker
+    static_configs:
+      - targets: ["planning-worker:9101"]

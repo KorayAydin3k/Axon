@@ -36,6 +36,7 @@ services:
     command: ["python", "-m", "app.planner.worker"]
     restart: unless-stopped
     environment:
+      AXON_PLANNING_METRICS_PORT: "9101"
       DATABASE_URL: "${DATABASE_URL:?Set DATABASE_URL in .env}"
       AXON_DATABASE_HOST: db
       OLLAMA_BASE_URL: http://ollama:11434

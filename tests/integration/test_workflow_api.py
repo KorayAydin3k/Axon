@@ -980,3 +980,53 @@ def test_workflow_timings_survive_resume_and_reload(scenario, monkeypatch):
     assert completed_steps[-1]["duration_ms"] >= 0
     assert client.get(path).json()["step_timings"] == completed_steps
     assert client.get(path + "/plan-job").json()["duration_ms"] == plan_ms
+
+
+def test_planning_worker_exports_completed_job_metrics(scenario, monkeypatch):
+    from contextlib import ExitStack
+    from urllib.request import urlopen
+
+    from prometheus_client.parser import text_string_to_metric_families
+
+    from app.observability.telemetry import metrics_registry
+    from app.planner import jobs, worker
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, workflow_id, _ = scenario
+    queued = client.post(path + "/plan-job")
+    assert queued.status_code == 202, queued.text
+
+    metric_name = "axon_stage_duration_seconds_count"
+    labels = {"stage": "planning", "outcome": "ok"}
+    count_before = metrics_registry.get_sample_value(metric_name, labels) or 0
+    start_http_server = worker.start_http_server
+    metrics_url = None
+    with ExitStack() as cleanup:
+        def start_metrics_server(*args, **kwargs):
+            nonlocal metrics_url
+            server, _ = start_http_server(*args, **kwargs)
+            cleanup.callback(server.server_close)
+            cleanup.callback(server.shutdown)
+            metrics_url = f"http://127.0.0.1:{server.server_port}/metrics"
+
+        monkeypatch.setenv("AXON_PLANNING_METRICS_PORT", "0")
+        monkeypatch.setattr(worker, "start_http_server", start_metrics_server)
+        monkeypatch.setattr(worker, "claim_plan_job", lambda: jobs.claim_plan_job(workflow_id))
+        monkeypatch.setattr(worker, "sleep", Mock(side_effect=SystemExit))
+        monkeypatch.setattr(jobs, "generate_plan", lambda _: build_support_plan(SupportAction.LIST, 2))
+
+        with pytest.raises(SystemExit):
+            worker.main()
+
+        assert metrics_url is not None
+        with urlopen(metrics_url, timeout=3) as response:
+            payload = response.read().decode("utf-8")
+
+    (count_after,) = (
+        sample.value
+        for metric in text_string_to_metric_families(payload)
+        for sample in metric.samples
+        if sample.name == metric_name and sample.labels == labels
+    )
+    assert count_after == count_before + 1
+    assert client.get(path + "/plan-job").json()["status"] == "ready"

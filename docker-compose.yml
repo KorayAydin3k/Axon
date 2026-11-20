@@ -20,6 +20,7 @@ services:
     profiles: ["local-ai"]
     environment:
       OLLAMA_NO_CLOUD: "1"
+      OLLAMA_KEEP_ALIVE: "${OLLAMA_KEEP_ALIVE:-15m}"
     ports:
       - "127.0.0.1:11434:11434"
     volumes:

@@ -9,6 +9,7 @@ from opentelemetry.trace import SpanKind
 from pydantic import ValidationError
 
 from app.engine.workflow_engine import execution_order
+from app.observability.telemetry import log_event
 from app.observability.tracing import trace_span
 from app.validation.plan import PlanModel, SupportAction, TicketLimit, WorkflowPlan, build_support_plan
 from app.validation.policy import ToolPolicyViolation
@@ -34,26 +35,37 @@ class PlannerIntent(PlanModel):
 
 _INSTRUCTIONS = """Classify the whole request for Axon's support-ticket demo.
 
-Available actions:
-- list_tickets: show the highest-priority support tickets.
-- summarize_tickets: summarize the highest-priority support tickets.
-- create_followup_tasks: create local follow-up tasks for those tickets, only
-  when the request explicitly asks to create follow-up tasks.
-- unsupported: any requested operation outside these actions, even if another
-  part of the request is supported. Sending email, closing or changing tickets,
-  and deleting records are unsupported.
-- needs_clarification: the user refers to missing context or gives no clear action.
+Supported operations can be combined. Choose the last operation needed:
+- list_tickets: identify or display the highest-priority support tickets and
+  their original details. Asking which ticket has highest priority is listing.
+- summarize_tickets: provide a summary, recap or digest of those tickets.
+- create_followup_tasks: create local follow-up tasks for those tickets.
+  Listing, summarizing and creating follow-up tasks together is supported.
+  Only choose this action when the user asks to create tasks.
 
-Set limit to a count only when the request explicitly specifies it (including
-number words or a singular ticket). If no count is specified, use null.
-"Highest-priority tickets" alone gives no count. Counts outside 1 to 10 are
-unsupported. For unsupported or needs_clarification, use limit=null.
+Choose unsupported if any requested operation is outside these actions.
+Sending email, closing or deleting records, and changing ticket fields or
+priority are unsupported. Ranking tickets by priority is supported.
+For Turkish, "önceliğini değiştir", "önceliğini düşür" and "önceliğini yükselt"
+ask to change priority. Reject the whole request even when it also asks for
+follow-up tasks. An operation explicitly excluded by the user is not requested.
+
+Choose needs_clarification for missing context or no clear action.
+
+Counts:
+- Use the number of tickets explicitly requested, including number words.
+- A singular ticket implies limit=1.
+- Plural tickets with no count imply limit=null. "Destek kayıtlarını" is plural.
+- Numbers of sentences, times and dates are not ticket counts.
+- Counts outside 1 to 10 are unsupported.
+- For unsupported or needs_clarification, use limit=null.
 
 Examples:
-"Show four urgent tickets" -> {"action":"list_tickets","limit":4}
-"Open follow-up tasks for the most urgent issues" -> {"action":"create_followup_tasks","limit":null}
-"Show a ticket and resolve it" -> {"action":"unsupported","limit":null}
-"Notify the requester by email" -> {"action":"unsupported","limit":null}
+"Display the most urgent ticket's details" -> {"action":"list_tickets","limit":1}
+"Summarize four urgent tickets" -> {"action":"summarize_tickets","limit":4}
+"Find three urgent tickets, summarize them and create local follow-up tasks" -> {"action":"create_followup_tasks","limit":3}
+"En yüksek öncelikli destek kayıtlarını göster" -> {"action":"list_tickets","limit":null}
+"Bir destek kaydını göster ve önceliğini değiştir" -> {"action":"unsupported","limit":null}
 "Repeat my earlier request" -> {"action":"needs_clarification","limit":null}
 """
 
@@ -72,6 +84,18 @@ _TICKET_COUNT = compile(
     r"(?:(?:highest[-\s]+priority|highest[-\s]+ranked|most\s+urgent|urgent|support)\s+)*"
     r"(?:tickets?|destek\s+(?:kayd\w*|kayıt\w*))\b"
 )
+_SINGULAR_TICKET = compile(
+    r"\b(?:a|an|the|which)\s+"
+    r"(?:(?:highest[-\s]+priority|highest[-\s]+ranked|most\s+urgent|urgent|support)\s+)*"
+    r"ticket\b(?!\s+(?:ids?|numbers?)\b)"
+)
+_PRIORITY_CHANGE = compile(
+    r"\b(?:önceliği(?:ni)?|önceliklerini)\s+"
+    r"(?:düşür(?:ün(?:üz)?)?|(?:yükselt|değiştir)(?:in(?:iz)?)?)\b"
+    r"|\b(?:(?P<negated>do\s+not|don['’]t|never|not)\s+)?"
+    r"(?:change|update|lower|raise)\s+(?:(?:the|their|its)\s+)?"
+    r"(?:(?:support\s+)?tickets?'?\s+)?priorit(?:y|ies)\b"
+)
 
 
 def _explicit_ticket_limit(user_request: str) -> int | None:
@@ -83,6 +107,9 @@ def _explicit_ticket_limit(user_request: str) -> int | None:
         count = match["count"]
         counts.add(_COUNT_WORDS[count] if count in _COUNT_WORDS else int(count))
 
+    if not counts and _SINGULAR_TICKET.search(normalized):
+        counts.add(1)
+
     if len(counts) > 1:
         raise PlannerRejected("needs_clarification")
 
@@ -93,6 +120,11 @@ def _explicit_ticket_limit(user_request: str) -> int | None:
 
 
 def generate_plan(user_request: str) -> WorkflowPlan:
+    normalized = user_request.casefold().replace("\u0307", "")
+    for match in _PRIORITY_CHANGE.finditer(normalized):
+        if match["negated"] is None:
+            raise PlannerRejected("unsupported")
+
     explicit_limit = _explicit_ticket_limit(user_request)
     payload = {
         "model": getenv("OLLAMA_MODEL", "qwen3:4b"),
@@ -134,6 +166,14 @@ def generate_plan(user_request: str) -> WorkflowPlan:
 
     if not isinstance(body, dict) or body.get("done") is not True or body.get("done_reason") == "length":
         raise PlannerError("Ollama did not return a complete intent response", code="ollama_invalid_response")
+
+    log_event(
+        "ollama.response",
+        model=payload["model"],
+        load_duration_ns=body.get("load_duration"),
+        prompt_eval_duration_ns=body.get("prompt_eval_duration"),
+        eval_duration_ns=body.get("eval_duration"),
+    )
 
     try:
         intent = PlannerIntent.model_validate_json(body["message"]["content"])

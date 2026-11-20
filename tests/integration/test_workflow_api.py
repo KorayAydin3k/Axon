@@ -1030,3 +1030,107 @@ def test_planning_worker_exports_completed_job_metrics(scenario, monkeypatch):
     )
     assert count_after == count_before + 1
     assert client.get(path + "/plan-job").json()["status"] == "ready"
+
+
+@pytest.mark.parametrize("model_limit", [None, 3], ids=["omitted-count", "wrong-count"])
+@pytest.mark.parametrize(
+    "request_text, action",
+    [
+        ("Which support ticket should I review first?", "list_tickets"),
+        ("Summarize the highest-ranked support ticket.", "summarize_tickets"),
+        ("Create a follow-up task for the most urgent ticket.", "create_followup_tasks"),
+    ],
+)
+def test_singular_ticket_limit_overrides_model_count(scenario, monkeypatch, model_limit, request_text, action):
+    from app.persistence.database import engine
+    from app.planner import ollama_planner
+
+    client, path, workflow_id, _ = scenario
+    with Session(engine) as session, session.begin():
+        session.get(Workflow, workflow_id).request = request_text
+
+    payload = ollama_response(dumps({"action": action, "limit": model_limit}))
+    monkeypatch.setattr(ollama_planner, "urlopen", lambda *args, **kwargs: BytesIO(payload))
+    response = client.post(path + "/plan")
+    assert response.status_code == 200, response.text
+    assert response.json()["steps"][0]["arguments"] == {"limit": 1}
+    assert response.json()["steps"][-1]["tool"] == action
+
+    result = client.post(path + "/run", params={"plan": "generated"})
+    assert result.status_code == 200, result.text
+    expected_status = "WAITING_FOR_APPROVAL" if action == "create_followup_tasks" else "COMPLETED"
+    assert result.json()["status"] == expected_status
+    details = client.get(path + "/events").json()[-1]["details"]
+    ticket_ids = details.get("ticket_ids")
+    if ticket_ids is None:
+        ticket_ids = [ticket["id"] for ticket in details.get("tickets", [])]
+    assert ticket_ids == ["T-102"]
+
+
+@pytest.mark.parametrize(
+    "request_text, expected_limit",
+    [
+        ("Show the highest-priority tickets.", None),
+        ("Show the highest-priority tickets and include the ticket ID for each.", None),
+        ("Show the top 4 tickets and include the ticket ID for each.", 4),
+        ("Show at most one ticket.", None),
+    ],
+)
+def test_plural_ticket_requests_keep_their_count(request_text, expected_limit):
+    from app.planner.ollama_planner import _explicit_ticket_limit
+
+    assert _explicit_ticket_limit(request_text) == expected_limit
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "İki destek kaydı için takip görevi oluştur ve önceliğini düşür.",
+        "En acil destek kaydının önceliğini değiştirin.",
+        "List two tickets and lower their priority.",
+        "Create follow-up tasks and update the priority of the tickets.",
+    ],
+)
+def test_priority_changes_are_rejected_before_ollama(scenario, monkeypatch, request_text):
+    from app.persistence.database import engine
+    from app.planner import ollama_planner
+
+    client, path, workflow_id, _ = scenario
+    with Session(engine) as session, session.begin():
+        session.get(Workflow, workflow_id).request = request_text
+
+    unexpected_model = Mock(side_effect=AssertionError("Unsupported request reached Ollama"))
+    monkeypatch.setattr(ollama_planner, "urlopen", unexpected_model)
+    response = client.post(path + "/plan")
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "unsupported"
+    unexpected_model.assert_not_called()
+
+    run = client.post(path + "/run", params={"plan": "generated"})
+    assert run.status_code == 409, run.text
+    assert task_count(workflow_id) == 0
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "En acil destek kayıtlarını öncelik sırasına göre göster.",
+        "Summarize two urgent tickets. Do not change their priority.",
+        "Show two support tickets and don't lower the priority.",
+        "İki destek kaydı için takip görevi oluştur, önceliğini düşürmeyin.",
+    ],
+)
+def test_priority_ranking_and_exclusions_reach_ollama(scenario, monkeypatch, request_text):
+    from app.persistence.database import engine
+    from app.planner import ollama_planner
+
+    client, path, workflow_id, _ = scenario
+    with Session(engine) as session, session.begin():
+        session.get(Workflow, workflow_id).request = request_text
+
+    payload = ollama_response('{"action":"list_tickets","limit":2}')
+    model = Mock(side_effect=lambda *args, **kwargs: BytesIO(payload))
+    monkeypatch.setattr(ollama_planner, "urlopen", model)
+    response = client.post(path + "/plan")
+    assert response.status_code == 200, response.text
+    model.assert_called_once()

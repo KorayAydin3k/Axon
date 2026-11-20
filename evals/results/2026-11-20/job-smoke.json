@@ -1,0 +1,87 @@
+{
+  "summary": {
+    "planning_mode": "job",
+    "cases": 2,
+    "passed": 2,
+    "planner_passed": 2,
+    "planner_rejection_checks": 1,
+    "planner_rejection_passed": 1,
+    "tool_selection_checks": 1,
+    "tool_selection_passed": 1,
+    "execution_eligible": 1,
+    "execution_checks": 1,
+    "execution_not_attempted": 0,
+    "execution_passed": 1,
+    "execution_pass_rate_when_attempted": 1.0,
+    "execution_end_to_end_pass_rate": 1.0,
+    "plan_job_latency_ms": {
+      "samples": 2,
+      "p50": 27770.5,
+      "p95": 54522.9
+    },
+    "planning_wait_timeout_seconds": 660,
+    "planning_jobs_retried": 0,
+    "planning_jobs_recovered": 0
+  },
+  "cases": [
+    {
+      "id": "holdout-v2-read-upper-bound",
+      "category": "read",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_job_start_http_status": 202,
+        "plan_job_http_status": 200,
+        "plan_job_status": "ready",
+        "plan_job_attempts": 1,
+        "plan_job_error_code": null,
+        "plan_job_last_error_code": null,
+        "plan_job_duration_ms": 53825.87,
+        "tools": [
+          "list_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 10
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101",
+          "T-103"
+        ]
+      },
+      "workflow_id": "df641f8d-92ad-4508-b3b2-9078dccf0744",
+      "plan_latency_ms": 54522.9
+    },
+    {
+      "id": "holdout-v2-reject-change-priority-tr",
+      "category": "unsupported",
+      "planner_passed": true,
+      "tool_selection_passed": null,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_job_start_http_status": 202,
+        "plan_job_http_status": 200,
+        "plan_job_status": "failed",
+        "plan_job_attempts": 1,
+        "plan_job_error_code": "unsupported",
+        "plan_job_last_error_code": "unsupported",
+        "plan_job_duration_ms": null,
+        "detail": "unsupported"
+      },
+      "workflow_id": "4a854624-5cbc-47ac-a7bc-83b31d6f5975",
+      "plan_latency_ms": 1018.2
+    }
+  ]
+}

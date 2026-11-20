@@ -1,0 +1,86 @@
+{
+  "run_date": "2026-11-20",
+  "run_date_source": "Operator-supplied logs; report JSON has no timestamps.",
+  "model_tag": "qwen3:4b",
+  "documentation_source_head": "a6153f2840c4ee81f2b4ee378ade9a29033cabe3",
+  "datasets": [
+    {
+      "id": "planner_cases",
+      "path": "evals/planner_cases.jsonl",
+      "sha256": "a41d5e4598639ab2a4d0f7d445abf43596a458b0841022b4b9250f085bd22850",
+      "cases": 12,
+      "current_role": "regression"
+    },
+    {
+      "id": "planner_holdout",
+      "path": "evals/planner_holdout.jsonl",
+      "sha256": "6b7aa8fa7f281eb30e5b95e9ed88480fc21e91c3917b5db3e57a254b6f8c4b4a",
+      "cases": 6,
+      "current_role": "regression"
+    },
+    {
+      "id": "planner_holdout_v2",
+      "path": "evals/planner_holdout_v2.jsonl",
+      "sha256": "f778c43fc0ddef33f2dbdaa0f7fb4562146bb33d91aa56baf2be72c5225a8c5d",
+      "cases": 24,
+      "current_role": "regression"
+    },
+    {
+      "id": "job-smoke-cases",
+      "path": "evals/results/2026-11-20/job-cases.jsonl",
+      "sha256": "1935eecc4752fdfe1b58c80e60ff32871fa1732e8f6da96e3c3e264e4405139c",
+      "cases": 2,
+      "parent_dataset": "planner_holdout_v2",
+      "case_ids": [
+        "holdout-v2-read-upper-bound",
+        "holdout-v2-reject-change-priority-tr"
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "id": "sync-planner_holdout_v2",
+      "planning_mode": "sync",
+      "source_commit": "774850d11e1c7c2bab506146a87e7636ed28050b",
+      "dataset": "planner_holdout_v2",
+      "report_path": "evals/results/2026-11-20/sync-planner_holdout_v2.json",
+      "report_sha256": "77a27efb5614c084ed3bf920dca918163c305613562d3583f965ff6c02563f73",
+      "original_report_path": "evals/results/planner-final.KZ8Kod/planner_holdout_v2.json"
+    },
+    {
+      "id": "sync-planner_cases",
+      "planning_mode": "sync",
+      "source_commit": "774850d11e1c7c2bab506146a87e7636ed28050b",
+      "dataset": "planner_cases",
+      "report_path": "evals/results/2026-11-20/sync-planner_cases.json",
+      "report_sha256": "42965bb896c467ccbda39d2bdeaf24f427d1be61bf778a4077dd60bdc74434d7",
+      "original_report_path": "evals/results/planner-final.KZ8Kod/planner_cases.json"
+    },
+    {
+      "id": "sync-planner_holdout",
+      "planning_mode": "sync",
+      "source_commit": "774850d11e1c7c2bab506146a87e7636ed28050b",
+      "dataset": "planner_holdout",
+      "report_path": "evals/results/2026-11-20/sync-planner_holdout.json",
+      "report_sha256": "0bd47405111892625762f109b72b23942bd60ef113e1211261116d5c91b09261",
+      "original_report_path": "evals/results/planner-final.KZ8Kod/planner_holdout.json"
+    },
+    {
+      "id": "job-smoke",
+      "planning_mode": "job",
+      "source_commit": null,
+      "implementation_commit_reference": "560b33b",
+      "source_note": "Run used the changes subsequently committed as 560b33b; no exact run SHA was captured.",
+      "dataset": "job-smoke-cases",
+      "report_path": "evals/results/2026-11-20/job-smoke.json",
+      "report_sha256": "bb5fb2dd15814f207513ad22014dc1db6fbe29d965d9861766b4f94784ac0c73",
+      "original_report_path": "evals/results/planner-job.fVODet/result.json"
+    }
+  ],
+  "limits": [
+    "Datasets used during planner development are regression sets, including files named holdout.",
+    "Reports do not capture model digests or initial cache state.",
+    "Approval cases stop at WAITING_FOR_APPROVAL and do not verify final task writes.",
+    "These reports predate the model-residency change in a6153f2."
+  ]
+}

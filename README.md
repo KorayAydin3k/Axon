@@ -47,7 +47,7 @@ The queue and the decision panel show a separate waiting workflow for the same r
 
 </details>
 
-The execution tile totals the backend timings for Run and Resume in the current tab and excludes time spent waiting for the operator.
+The execution tile totals the backend timings for Run and Resume in the current tab and excludes time spent waiting for the operator. Completed step durations are stored with their checkpoints and remain available when reopening a workflow.
 
 ## Run locally
 
@@ -62,29 +62,44 @@ test -f .env || cp .env.example .env
 Set `AXON_APPROVAL_TOKEN` in `.env` to a private development value. The following commands use the Qwen3 4B model from the evaluation. Match the downloaded tag to your planner configuration.
 
 ```bash
-docker compose up --wait --wait-timeout 120 db ollama
+docker compose --profile local-ai up --wait --wait-timeout 120 db ollama
 docker compose exec -T ollama ollama pull qwen3:4b
-docker compose build api
+docker compose build api planning-worker
 docker compose run --rm -T --no-deps api alembic upgrade head
-docker compose up --wait --wait-timeout 120 api
+docker compose --profile local-ai up --wait --wait-timeout 120 api planning-worker
 curl -fsS http://127.0.0.1:8002/health
 ```
 
 Open [the local dashboard](http://127.0.0.1:8002/dashboard/). In Codespaces, open the forwarded **8002** port, keep it private, and append `/dashboard/` to its URL.
+
+The health endpoint confirms the API is running; it does not preload the model. Initial planning can be slow. Compose requests a configurable 15-minute model residency window to reduce repeated loads between requests; see [model residency and its limits](docs/ollama-model-residency.md).
+
+### Optional monitoring
+
+With the local stack running, start the included Prometheus service:
+
+```bash
+docker compose --profile monitoring up -d prometheus
+```
+
+Open [Prometheus targets](http://127.0.0.1:9090/targets) and check that `axon-api` and `axon-planning-worker` are **UP**. In Codespaces, forward port **9090** privately. The API and worker expose separate process metrics; Prometheus scrapes both. Stage and tool histograms record latency by outcome.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
     UI["React operator console"] --> API["FastAPI"]
-    API --> Planner["Planner with local Ollama"]
+    API -->|Synchronous preview| Planner["Planner with local Ollama"]
+    Worker["Planning worker"] --> Planner
+    Worker -->|Claim jobs and save plans| Store[("PostgreSQL")]
     Planner --> Validation["Plan validation and tool policy"]
-    Validation --> Engine["Workflow execution engine"]
+    Validation -->|Validated plan| Store
+    API -->|Run or resume| Engine["Workflow execution engine"]
     Engine --> Read["Read-only ticket tools"]
     Engine --> Gate{"Operator decision for task creation"}
     Gate -->|Approve and resume| Write["Create follow-up tasks"]
     Gate -->|Reject| Cancelled["Cancelled workflow"]
-    API --> Store[("PostgreSQL")]
+    API -->|Queue browser preview| Store
     Engine --> Store
     Write --> Store
 ```
@@ -92,60 +107,65 @@ flowchart TD
 | Component | Responsibility |
 | --- | --- |
 | React and TypeScript | Request entry, validated plan preview, execution history, approval queue, and workflow results |
-| FastAPI | Workflow API, asynchronous browser plan previews, and operator decisions |
-| Ollama | Local generation of structured plans for supported requests |
-| Validation and execution | Schema checks, dependency order, tool policies, retries, and resume from committed steps |
-| PostgreSQL and Alembic | Workflow state, step checkpoints, event history, and migrations |
-| OpenTelemetry and structured logs | Trace and request correlation across planning and execution |
+| FastAPI | Workflow API, persisted preview jobs, synchronous previews, and operator decisions |
+| Planning worker | Claim queued jobs, retry Ollama timeouts, reclaim interrupted jobs, and save validated plans |
+| Ollama | Identify the supported action and ticket count; Axon builds the tool plan |
+| Validation and execution | Schema and tool data checks, dependency order, tool policies, retries, and resume from committed steps |
+| PostgreSQL and Alembic | Workflow state, planning jobs, step checkpoints and durations, event history, and migrations |
+| OpenTelemetry, structured logs, and Prometheus | API/worker request correlation, stage and tool spans, and latency histograms |
 
-The browser starts a preview with `POST /workflows/{id}/plan-job`, receives an acknowledgment, then polls `GET /workflows/{id}/plan-job`. The synchronous `POST /workflows/{id}/plan` route serves direct API calls and the evaluation runner.
+The browser starts a preview with `POST /workflows/{id}/plan-job`, receives an acknowledgment, then polls `GET /workflows/{id}/plan-job`. PostgreSQL stores the job; a separate worker generates the plan. The synchronous `POST /workflows/{id}/plan` route serves direct API calls. The evaluation runner supports both paths and defaults to synchronous mode.
 
 ## Reliability and evaluation
 
 | Check | Observed result |
 | --- | --- |
-| Invalid model responses | Six integration cases cover malformed JSON, truncated responses, and schema violations. The workflow stays pending and no tool runs |
+| Invalid model responses | Integration cases cover malformed JSON, truncated responses, and schema violations. The workflow stays pending and no tool runs |
+| Planning recovery | Jobs survive API restarts. Tests cover worker interruption, reclaiming an expired lease, stale-result fencing, timeout retries, and the three-attempt limit |
 | Crash recovery | The execution process exited during task creation. Resume reused the first two committed steps |
 | Transient and permanent failures | Transient retries used 1, 2, and 4 second delays. A permanent failure stopped after one attempt |
 | Concurrent resume | PostgreSQL integration tests confirm one task-creation call, one task per expected ticket, and one completion event |
 | Duplicate run | Replaying a separate two-ticket workflow returned HTTP 409 and preserved both follow-up task records |
+| Approval replay and access | Tests preserve the original decision and audit history on replay, reject conflicting decisions, and verify access-denial logs without credentials |
+| Tool boundaries | Tests cover permission revocation before a write, invalid inputs and outputs, write rollback, and invalid saved checkpoints |
 | Planning diagnostics | Both planning endpoints log `planning.failed` with the workflow ID and an error code for timeout, connection failure, or invalid model response |
 | Slow browser preview | With a controlled 65-second delay before planning, the initial response returned HTTP 202, polling continued past one minute, and the plan appeared |
-| CI | PostgreSQL integration tests run in GitHub Actions |
+| CI | GitHub Actions runs `python -m pytest -q tests`, covering PostgreSQL integration tests and the evaluation runner tests |
 
 ### Evaluation results
 
-These counts describe fixed test sets for supported requests, clarification, and unsupported actions. The [archived reports](evals/results/) record aggregate planner and execution results.
+The following **2026-11-20 Qwen3 4B** results are archived test-set observations. These files have been used during planner development, including those named `holdout`; they now serve as regression sets, not unseen benchmarks.
 
-| Metric | Holdout rerun | Archived regression |
-| --- | --- | --- |
-| Dataset | [planner_holdout.jsonl](evals/planner_holdout.jsonl) | [planner_cases.jsonl](evals/planner_cases.jsonl) |
-| Dataset snapshot | [`563ecc2`](https://github.com/KorayAydin3k/Axon/commit/563ecc2) | — |
-| Run date | 2026-11-15 | — |
-| Total cases | 6 | 12 |
-| Planner checks, including expected rejections | 6/6 | 12/12 |
-| Exact plan matches on supported requests | 3/3 | — |
-| Correct tool selection on supported requests | 3/3 | — |
-| Expected rejections | 3/3 | — |
-| Successful execution checks | 3/3 | 8/8 |
-| End-to-end success on requests expected to execute | 3/3 | — |
+| Dataset or subset | Planning path | Planner checks, including rejections | Run-state checks passed / attempted |
+| --- | --- | --- | --- |
+| [Expanded set](evals/planner_holdout_v2.jsonl), 24 cases | Synchronous | 23/24 | 15/15 |
+| [Regression set](evals/planner_cases.jsonl), 12 cases | Synchronous | 12/12 | 8/8 |
+| [Legacy holdout file](evals/planner_holdout.jsonl), 6 cases | Synchronous | 6/6 | 3/3 |
+| [Two-case subset](evals/results/2026-11-20/job-cases.jsonl) | Durable job | 2/2 | 1/1 |
 
-The [runner](scripts/run_eval.py) reports tool selection, full plan correctness, and execution separately. Its end-to-end execution rate uses all cases expected to run, including cases blocked at planning. Each execution check verifies the expected workflow state and selected tickets. Approval-gated cases can stop at `WAITING_FOR_APPROVAL`.
+The synchronous suite passed **41/42** cases. One request returned HTTP 502 after about 180 seconds; operator logs identified `ollama_timeout`. The 26 attempted run-state checks passed, but one of the 27 supported cases never reached execution. Seven checks ended at `WAITING_FOR_APPROVAL`; the evaluation does not approve or verify the final task writes.
 
-Run the holdout evaluation against a running local stack.
+The separate two-case job run required **zero retries**. It validates that path for those inputs and does not replace the synchronous failure or demonstrate recovery from a live timeout. These reports predate the 15-minute model-residency setting.
+
+See [results, dataset hashes, latency, and measurement limits](docs/planner-evaluation-results.md) and the [unchanged JSON reports](evals/results/2026-11-20/). Earlier reports remain in [the archive](evals/results/).
+
+To evaluate the expanded set through the dashboard's planning path against a running local stack:
 
 ```bash
+mkdir -p evals/results
+report_dir=$(mktemp -d "$PWD/evals/results/planner-job.XXXXXX")
 python3 scripts/run_eval.py \
   --base-url http://127.0.0.1:8002 \
-  --dataset evals/planner_holdout.jsonl \
-  --output /tmp/axon-holdout.json \
+  --planning-mode job \
+  --dataset evals/planner_holdout_v2.jsonl \
+  --output "$report_dir/result.json" \
   --fail-on-regression
 ```
 
-The report includes per-case results, HTTP statuses, and plan latency. The command exits with status 1 if any case fails.
+Use `--planning-mode sync` for a single synchronous call per case. Reports include per-case results, actual HTTP statuses, and planning latency; job reports also retain claim counts and failure codes. The command exits with status 1 if any case fails. See [job evaluation semantics](docs/planning-job-evaluation.md) for wait limits and retry reporting.
 
 ## Scope
 
-Axon demonstrates controlled execution with simulated support data. The operator token authorizes approval and rejection in the local demo. Production deployment and multi-user authorization are outside the project's scope.
+Axon demonstrates controlled execution with simulated support data. Approval and rejection use a shared development token, without per-user identity or role management. Production deployment and multi-user authorization are outside the project's scope.
 
 Browser plan jobs are queued in PostgreSQL and run by the Compose planning worker. The worker can reclaim an interrupted job after its 210-second lease expires. Each claim has a new token, and only the active claim can save a result. Ollama timeouts are retried in the same job, with up to three total attempts. If the dashboard stops waiting, select **Preview plan** again to check the same job. PostgreSQL persists step checkpoints to support resuming interrupted workflow execution.

@@ -1,0 +1,366 @@
+{
+  "summary": {
+    "cases": 12,
+    "passed": 12,
+    "planner_passed": 12,
+    "planner_rejection_checks": 4,
+    "planner_rejection_passed": 4,
+    "tool_selection_checks": 8,
+    "tool_selection_passed": 8,
+    "execution_eligible": 8,
+    "execution_checks": 8,
+    "execution_not_attempted": 0,
+    "execution_passed": 8,
+    "execution_pass_rate_when_attempted": 1.0,
+    "execution_end_to_end_pass_rate": 1.0,
+    "plan_http_latency_ms": {
+      "samples": 12,
+      "p50": 7899.5,
+      "p95": 9259.6
+    }
+  },
+  "cases": [
+    {
+      "id": "list-one",
+      "category": "read",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 1
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102"
+        ]
+      },
+      "plan_latency_ms": 7668.4
+    },
+    {
+      "id": "list-two",
+      "category": "read",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 2
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104"
+        ]
+      },
+      "plan_latency_ms": 7580.7
+    },
+    {
+      "id": "list-default",
+      "category": "read",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 3
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101"
+        ]
+      },
+      "plan_latency_ms": 7581.4
+    },
+    {
+      "id": "list-four-tr",
+      "category": "read",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 4
+            },
+            "depends_on": []
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101",
+          "T-103"
+        ]
+      },
+      "plan_latency_ms": 8570.6
+    },
+    {
+      "id": "summary-one",
+      "category": "multi_step",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 1
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102"
+        ]
+      },
+      "plan_latency_ms": 8532.0
+    },
+    {
+      "id": "summary-two",
+      "category": "multi_step",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 2
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104"
+        ]
+      },
+      "plan_latency_ms": 8953.5
+    },
+    {
+      "id": "followup-two",
+      "category": "approval",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets",
+          "create_followup_tasks"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 2
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "WAITING_FOR_APPROVAL",
+        "ticket_ids": [
+          "T-102",
+          "T-104"
+        ]
+      },
+      "plan_latency_ms": 9259.6
+    },
+    {
+      "id": "followup-default",
+      "category": "approval",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 200,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets",
+          "create_followup_tasks"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 3
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "WAITING_FOR_APPROVAL",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101"
+        ]
+      },
+      "plan_latency_ms": 8325.1
+    },
+    {
+      "id": "unsupported-delete",
+      "category": "unsupported",
+      "planner_passed": true,
+      "tool_selection_passed": null,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "unsupported"
+      },
+      "plan_latency_ms": 6411.9
+    },
+    {
+      "id": "unsupported-email",
+      "category": "unsupported",
+      "planner_passed": true,
+      "tool_selection_passed": null,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "unsupported"
+      },
+      "plan_latency_ms": 6746.8
+    },
+    {
+      "id": "unsupported-mixed",
+      "category": "unsupported",
+      "planner_passed": true,
+      "tool_selection_passed": null,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "unsupported"
+      },
+      "plan_latency_ms": 7401.2
+    },
+    {
+      "id": "clarify-missing-context",
+      "category": "clarification",
+      "planner_passed": true,
+      "tool_selection_passed": null,
+      "execution_passed": null,
+      "passed": true,
+      "actual": {
+        "plan_http_status": 422,
+        "detail": "needs_clarification"
+      },
+      "plan_latency_ms": 8130.7
+    }
+  ]
+}

@@ -52,4 +52,4 @@ jobs:
           alembic check
 
       - name: Run regression tests
-        run: python -m pytest -q tests/integration
+        run: python -m pytest -q tests

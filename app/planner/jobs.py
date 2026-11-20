@@ -68,7 +68,10 @@ def claim_plan_job(workflow_id: UUID | None = None) -> PlanJobClaim | None:
         attempts = job.get("attempts")
         attempt = attempts + 1 if isinstance(attempts, int) else 1
         if attempt > MAX_ATTEMPTS:
-            _fail_plan_job(workflow, job_id, "Planning was interrupted. Try Preview plan again.")
+            _fail_plan_job(
+                workflow, job_id, "Planning was interrupted. Try Preview plan again.",
+                error_code="planning_interrupted",
+            )
             return None
 
         token = uuid4().hex
@@ -81,6 +84,7 @@ def claim_plan_job(workflow_id: UUID | None = None) -> PlanJobClaim | None:
             "attempts": attempt,
             "claim_token": token,
             "request_id": request_id,
+            "last_error_code": job.get("last_error_code"),
         }
         workflow.plan_job_run_at = now + CLAIM_LEASE
         return PlanJobClaim(workflow.id, job_id, token, request_id)
@@ -136,19 +140,27 @@ def generate_workflow_plan(
         job = workflow.plan_job or {}
         ready_job: dict[str, object] = {"status": "ready", "duration_ms": timing.duration_ms}
         if job.get("status") == "planning":
-            ready_job.update(id=job.get("id"), request_id=job.get("request_id"))
+            ready_job.update(
+                id=job.get("id"), request_id=job.get("request_id"),
+                attempts=job.get("attempts"), last_error_code=job.get("last_error_code"),
+            )
         workflow.plan_job = ready_job
         workflow.plan_job_run_at = None
 
     return candidate, timing.duration_ms
 
 
-def _fail_plan_job(workflow: Workflow, job_id: str, message: str) -> None:
+def _fail_plan_job(
+    workflow: Workflow, job_id: str, message: str, *, error_code: str,
+) -> None:
     previous = workflow.plan_job or {}
     workflow.plan_job = {
         "id": job_id,
         "status": "failed",
         "error": message,
+        "error_code": error_code,
+        "last_error_code": error_code,
+        "attempts": previous.get("attempts"),
         "request_id": previous.get("request_id"),
     }
     workflow.plan_job_run_at = None
@@ -169,11 +181,14 @@ def _run_claimed_plan_job(claim: PlanJobClaim) -> None:
             generate_workflow_plan(claim.workflow_id, session, claim)
     except PlannerRejected as error:
         message = str(error)
+        error_code = str(error)
     except PlannerError as error:
+        error_code = error.code
         retry_timeout = error.code == "ollama_timeout"
         message = "Ollama timed out. Try Preview plan again." if retry_timeout else FAILURE_MESSAGE
     except (WorkflowNotFound, WorkflowRunConflict):
         message = FAILURE_MESSAGE
+        error_code = "planning_conflict"
     else:
         return
 
@@ -196,10 +211,11 @@ def _run_claimed_plan_job(claim: PlanJobClaim) -> None:
                 "status": "planning",
                 "attempts": attempts,
                 "request_id": claim.request_id,
+                "last_error_code": error_code,
             }
             workflow.plan_job_run_at = now + TIMEOUT_RETRY_DELAY
         else:
-            _fail_plan_job(workflow, claim.job_id, message)
+            _fail_plan_job(workflow, claim.job_id, message, error_code=error_code)
             return
 
     log_event(

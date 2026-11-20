@@ -608,6 +608,7 @@ def test_planning_job_recovers_after_worker_crash(scenario):
     response = client.get(path + "/plan-job")
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "ready"
+    assert response.json()["attempts"] == 2
     assert [step["tool"] for step in response.json()["plan"]["steps"]] == ["list_tickets"]
 
     with Session(engine) as session:
@@ -669,6 +670,8 @@ def test_interrupted_planning_stops_at_attempt_limit(scenario):
     result = client.get(path + "/plan-job").json()
     assert result["status"] == "failed"
     assert "interrupted" in result["error"]
+    assert result["attempts"] == jobs.MAX_ATTEMPTS
+    assert result["error_code"] == "planning_interrupted"
     assert client.post(path + "/plan-job").status_code == 202
     assert jobs.claim_plan_job(workflow_id) is not None
 
@@ -702,13 +705,19 @@ def test_worker_retries_ollama_timeout(scenario, monkeypatch, recover):
         assert claim.job_id == job_id
         jobs.run_plan_job(claim)
         if attempt < expected_attempts:
-            assert client.get(path + "/plan-job").json()["status"] == "planning"
+            waiting = client.get(path + "/plan-job").json()
+            assert waiting["status"] == "planning"
+            assert waiting["attempts"] == attempt
+            assert waiting["last_error_code"] == "ollama_timeout"
             assert client.post(path + "/plan-job").status_code == 202
             assert jobs.claim_plan_job(workflow_id) is None
             _expire_planning_lease(workflow_id)
 
     result = client.get(path + "/plan-job").json()
     assert result["status"] == ("ready" if recover else "failed")
+    assert result["attempts"] == expected_attempts
+    assert result["last_error_code"] == "ollama_timeout"
+    assert result["error_code"] == (None if recover else "ollama_timeout")
     if recover:
         assert result["plan"]["steps"][0]["arguments"]["limit"] == 2
     else:
@@ -720,6 +729,33 @@ def test_worker_retries_ollama_timeout(scenario, monkeypatch, recover):
         assert workflow is not None
         assert workflow.plan_job["id"] == job_id
         assert workflow.plan_job_run_at is None
+
+
+@pytest.mark.parametrize("reason", ["unsupported", "needs_clarification"])
+def test_plan_job_rejection_is_machine_readable_and_not_retried(scenario, monkeypatch, reason):
+    from app.planner import jobs
+    from app.planner.ollama_planner import PlannerRejected
+
+    client, path, workflow_id, _ = scenario
+    generate = Mock(side_effect=PlannerRejected(reason))
+    monkeypatch.setattr(jobs, "generate_plan", generate)
+    enqueued = client.post(path + "/plan-job")
+    assert enqueued.status_code == 202
+    assert enqueued.json()["attempts"] == 0
+    claim = jobs.claim_plan_job(workflow_id)
+    assert claim is not None
+    jobs.run_plan_job(claim)
+
+    response = client.get(path + "/plan-job")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["status"] == "failed"
+    assert result["error_code"] == reason
+    assert result["attempts"] == 1
+    assert result["plan"] is None
+    assert jobs.claim_plan_job(workflow_id) is None
+    generate.assert_called_once()
+    assert task_count(workflow_id) == 0
 
 
 @pytest.mark.parametrize(

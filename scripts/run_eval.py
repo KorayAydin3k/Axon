@@ -1,9 +1,9 @@
 import argparse
 import json
-from math import ceil
+from math import ceil, isfinite
 from pathlib import Path
 from statistics import median
-from time import perf_counter
+from time import perf_counter, sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 DEFAULT_DATASET = Path(__file__).resolve().parents[1] / "evals" / "planner_cases.jsonl"
 
 
-def request_json(base_url, path, *, method="GET", payload=None):
+def request_json(base_url, path, *, method="GET", payload=None, timeout=200):
     request = Request(
         base_url + path,
         data=json.dumps(payload).encode() if payload is not None else None,
@@ -20,7 +20,7 @@ def request_json(base_url, path, *, method="GET", payload=None):
     )
     try:
         try:
-            response = urlopen(request, timeout=200)
+            response = urlopen(request, timeout=timeout)
         except HTTPError as error:
             response = error
         with response:
@@ -53,7 +53,61 @@ def expected_steps(expected):
     ]
 
 
-def evaluate_case(base_url, case):
+def plan_with_job(base_url, path, *, timeout, poll_interval):
+    actual = {}
+    deadline = perf_counter() + timeout
+    method = "POST"
+    while True:
+        remaining = deadline - perf_counter()
+        if remaining <= 0:
+            actual.update(
+                plan_job_poll_timed_out=True,
+                detail="Planning job wait deadline exceeded; the job may still be running",
+            )
+            return None, None, actual
+
+        code, view = request_json(
+            base_url, path + "/plan-job", method=method, timeout=min(10, remaining)
+        )
+        if method == "POST":
+            actual["plan_job_start_http_status"] = code
+        actual["plan_job_http_status"] = code
+        if not isinstance(view, dict):
+            actual["detail"] = "Invalid planning job response shape"
+            return None, None, actual
+        if code not in ((200, 202) if method == "POST" else (200,)):
+            actual["detail"] = view.get("detail")
+            return None, None, actual
+
+        actual.update(
+            plan_job_status=view.get("status"),
+            plan_job_attempts=view.get("attempts"),
+            plan_job_error_code=view.get("error_code"),
+            plan_job_last_error_code=view.get("last_error_code"),
+            plan_job_duration_ms=view.get("duration_ms"),
+        )
+        if perf_counter() >= deadline:
+            actual.update(
+                plan_job_poll_timed_out=True,
+                detail="Planning job wait deadline exceeded; the job may still be running",
+            )
+            return None, None, actual
+        if view.get("status") == "ready":
+            return view.get("plan"), None, actual
+        if view.get("status") == "failed":
+            actual["detail"] = view.get("error")
+            return None, view.get("error_code"), actual
+        if view.get("status") != "planning":
+            actual["detail"] = "Unexpected planning job status"
+            return None, None, actual
+
+        sleep(min(poll_interval, max(0, deadline - perf_counter())))
+        method = "GET"
+
+
+def evaluate_case(
+    base_url, case, *, planning_mode="sync", planning_timeout=660, poll_interval=1,
+):
     expected = case["expect"]
     expects_rejection = "rejection" in expected
     result = {
@@ -74,12 +128,23 @@ def evaluate_case(base_url, case):
         return result
 
     path = f"/workflows/{workflow['id']}"
+    result["workflow_id"] = workflow["id"]
     started = perf_counter()
-    code, body = request_json(base_url, path + "/plan", method="POST")
-    if code:
-        result["plan_latency_ms"] = round((perf_counter() - started) * 1000, 1)
-    actual["plan_http_status"] = code
-    if code == 200:
+    if planning_mode == "job":
+        body, rejection, job_actual = plan_with_job(
+            base_url, path, timeout=planning_timeout, poll_interval=poll_interval
+        )
+        actual.update(job_actual)
+        has_plan = actual.get("plan_job_status") == "ready" and isinstance(body, dict)
+    else:
+        code, body = request_json(base_url, path + "/plan", method="POST")
+        actual["plan_http_status"] = code
+        rejection = body.get("detail") if code == 422 else None
+        has_plan = code == 200
+        if not has_plan:
+            actual["detail"] = body.get("detail")
+    result["plan_latency_ms"] = round((perf_counter() - started) * 1000, 1)
+    if has_plan:
         try:
             if not expects_rejection:
                 actual["tools"] = [step["tool"] for step in body["steps"]]
@@ -87,15 +152,12 @@ def evaluate_case(base_url, case):
             actual["steps"] = canonical_steps(body)
         except (KeyError, TypeError):
             actual["detail"] = "Invalid plan response shape"
-    else:
-        actual["detail"] = body.get("detail")
-
     if expects_rejection:
-        result["planner_passed"] = code == 422 and actual["detail"] == expected["rejection"]
+        result["planner_passed"] = rejection == expected["rejection"]
         result["passed"] = result["planner_passed"]
         return result
 
-    result["planner_passed"] = code == 200 and actual.get("steps") == expected_steps(expected)
+    result["planner_passed"] = has_plan and actual.get("steps") == expected_steps(expected)
     if not result["planner_passed"]:
         return result
 
@@ -117,11 +179,27 @@ def evaluate_case(base_url, case):
     return result
 
 
+def positive_seconds(value):
+    seconds = float(value)
+    if not isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("Must be a finite number greater than zero")
+    return seconds
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate Axon through its HTTP API")
     parser.add_argument("--base-url", default="http://127.0.0.1:8001")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--planning-mode", choices=("sync", "job"), default="sync",
+        help="sync: one /plan call; job: poll the durable planning worker",
+    )
+    parser.add_argument(
+        "--planning-timeout", type=positive_seconds, default=660,
+        help="Maximum total wait per planning job in seconds (default: 660)",
+    )
+    parser.add_argument("--poll-interval", type=positive_seconds, default=1)
     parser.add_argument(
         "--fail-on-regression", action="store_true", help="Exit with status 1 if any case fails"
     )
@@ -137,7 +215,10 @@ def main():
     results = []
     for index, case in enumerate(cases, 1):
         print(f"[{index}/{len(cases)}] {case['id']}", flush=True)
-        result = evaluate_case(base_url, case)
+        result = evaluate_case(
+            base_url, case, planning_mode=args.planning_mode,
+            planning_timeout=args.planning_timeout, poll_interval=args.poll_interval,
+        )
         results.append(result)
         if result["passed"]:
             print("  PASS")
@@ -150,6 +231,7 @@ def main():
     execution_checks = sum(row["execution_passed"] is not None for row in execution_cases)
     execution_passed = sum(row["execution_passed"] is True for row in execution_cases)
     summary = {
+        "planning_mode": args.planning_mode,
         "cases": len(results),
         "passed": sum(row["passed"] for row in results),
         "planner_passed": sum(row["planner_passed"] for row in results),
@@ -167,12 +249,21 @@ def main():
         "execution_end_to_end_pass_rate": (
             round(execution_passed / len(execution_cases), 4) if execution_cases else None
         ),
-        "plan_http_latency_ms": {
+        ("plan_job_latency_ms" if args.planning_mode == "job" else "plan_http_latency_ms"): {
             "samples": len(latencies),
             "p50": round(median(latencies), 1) if latencies else None,
             "p95": latencies[ceil(0.95 * len(latencies)) - 1] if latencies else None,
         },
     }
+    if args.planning_mode == "job":
+        retried = [row for row in results if (row["actual"].get("plan_job_attempts") or 0) > 1]
+        summary.update(
+            planning_wait_timeout_seconds=args.planning_timeout,
+            planning_jobs_retried=len(retried),
+            planning_jobs_recovered=sum(
+                row["actual"].get("plan_job_status") == "ready" for row in retried
+            ),
+        )
     print(json.dumps(summary, indent=2))
     if args.output:
         report = {"summary": summary, "cases": results}

@@ -254,28 +254,41 @@ class PlanJobView(BaseModel):
     plan: WorkflowPlan | None = None
     duration_ms: float | None = None
     error: str | None = None
+    attempts: int | None = None
+    error_code: str | None = None
+    last_error_code: str | None = None
 
 
 def _plan_job_view(workflow: Workflow) -> PlanJobView:
     job = workflow.plan_job or {}
+    attempts = job.get("attempts")
+    error_code = job.get("error_code")
+    last_error_code = job.get("last_error_code")
+    metadata = {
+        "attempts": attempts if type(attempts) is int and attempts >= 0 else None,
+        "error_code": error_code if isinstance(error_code, str) else None,
+        "last_error_code": last_error_code if isinstance(last_error_code, str) else None,
+    }
     if workflow.generated_plan is not None:
         duration = job.get("duration_ms")
         return PlanJobView(
             status="ready",
             plan=WorkflowPlan.model_validate(workflow.generated_plan),
             duration_ms=duration if isinstance(duration, (int, float)) else None,
+            **metadata,
         )
     if (
         job.get("status") == "planning"
         and workflow.plan_job_run_at is not None
         and workflow.status == WorkflowStatus.PENDING
     ):
-        return PlanJobView(status="planning")
+        return PlanJobView(status="planning", **metadata)
     if job:
         error = job.get("error")
         return PlanJobView(
             status="failed",
             error=error if isinstance(error, str) else "Planning expired. Try Preview plan again.",
+            **metadata,
         )
     return PlanJobView(status="idle")
 
@@ -301,7 +314,7 @@ def start_plan_job(
 
         enqueue_plan_job(session, workflow)
 
-    return PlanJobView(status="planning")
+    return PlanJobView(status="planning", attempts=0)
 
 
 @router.get("/{workflow_id}/plan-job", response_model=PlanJobView)

@@ -1,0 +1,285 @@
+{
+  "summary": {
+    "planning_mode": "job",
+    "execution_scope": "completed_with_persisted_followups",
+    "cases": 3,
+    "passed": 3,
+    "planner_passed": 3,
+    "planner_rejection_checks": 0,
+    "planner_rejection_passed": 0,
+    "tool_selection_checks": 3,
+    "tool_selection_passed": 3,
+    "execution_eligible": 3,
+    "execution_checks": 3,
+    "execution_not_attempted": 0,
+    "execution_passed": 3,
+    "execution_pass_rate_when_attempted": 1.0,
+    "execution_end_to_end_pass_rate": 1.0,
+    "plan_job_latency_ms": {
+      "samples": 3,
+      "p50": 10108.8,
+      "p95": 297779.6
+    },
+    "approval_checks": 3,
+    "approval_passed": 3,
+    "task_verification_checks": 3,
+    "task_verification_passed": 3,
+    "planning_wait_timeout_seconds": 660,
+    "planning_jobs_retried": 1,
+    "planning_jobs_recovered": 1
+  },
+  "cases": [
+    {
+      "id": "followup-two",
+      "category": "approval",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_job_start_http_status": 202,
+        "plan_job_http_status": 200,
+        "plan_job_status": "ready",
+        "plan_job_attempts": 2,
+        "plan_job_error_code": null,
+        "plan_job_last_error_code": "ollama_timeout",
+        "plan_job_duration_ms": 115204.19,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets",
+          "create_followup_tasks"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 2
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104"
+        ],
+        "initial_status": "WAITING_FOR_APPROVAL",
+        "approval_plan_verified": true,
+        "tasks_before_approval_http_status": 200,
+        "tasks_before_approval_count": 0,
+        "approval_http_status": 200,
+        "tasks_before_resume_http_status": 200,
+        "tasks_before_resume_count": 0,
+        "resume_http_status": 200,
+        "workflow_http_status": 200,
+        "persisted_status": "COMPLETED",
+        "completion_events_http_status": 200,
+        "tasks_http_status": 200,
+        "followup_tasks": [
+          {
+            "ticket_id": "T-102",
+            "summary": "Priority 5: Checkout unavailable"
+          },
+          {
+            "ticket_id": "T-104",
+            "summary": "Priority 4: Account access blocked"
+          }
+        ],
+        "matching_approval_events": 1
+      },
+      "approval_wait_passed": true,
+      "approval_passed": true,
+      "tasks_verified": true,
+      "workflow_id": "d426c2b0-217c-47b0-8b6f-55668c3d537d",
+      "plan_latency_ms": 297779.6
+    },
+    {
+      "id": "holdout-followup-three",
+      "category": "approval",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_job_start_http_status": 202,
+        "plan_job_http_status": 200,
+        "plan_job_status": "ready",
+        "plan_job_attempts": 1,
+        "plan_job_error_code": null,
+        "plan_job_last_error_code": null,
+        "plan_job_duration_ms": 8657.83,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets",
+          "create_followup_tasks"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 3
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101"
+        ],
+        "initial_status": "WAITING_FOR_APPROVAL",
+        "approval_plan_verified": true,
+        "tasks_before_approval_http_status": 200,
+        "tasks_before_approval_count": 0,
+        "approval_http_status": 200,
+        "tasks_before_resume_http_status": 200,
+        "tasks_before_resume_count": 0,
+        "resume_http_status": 200,
+        "workflow_http_status": 200,
+        "persisted_status": "COMPLETED",
+        "completion_events_http_status": 200,
+        "tasks_http_status": 200,
+        "followup_tasks": [
+          {
+            "ticket_id": "T-101",
+            "summary": "Priority 3: Duplicate invoice"
+          },
+          {
+            "ticket_id": "T-102",
+            "summary": "Priority 5: Checkout unavailable"
+          },
+          {
+            "ticket_id": "T-104",
+            "summary": "Priority 4: Account access blocked"
+          }
+        ],
+        "matching_approval_events": 1
+      },
+      "approval_wait_passed": true,
+      "approval_passed": true,
+      "tasks_verified": true,
+      "workflow_id": "f0d63847-69a3-4d83-be3e-93103c6100d1",
+      "plan_latency_ms": 10104.6
+    },
+    {
+      "id": "holdout-v2-followup-above-inventory",
+      "category": "approval",
+      "planner_passed": true,
+      "tool_selection_passed": true,
+      "execution_passed": true,
+      "passed": true,
+      "actual": {
+        "plan_job_start_http_status": 202,
+        "plan_job_http_status": 200,
+        "plan_job_status": "ready",
+        "plan_job_attempts": 1,
+        "plan_job_error_code": null,
+        "plan_job_last_error_code": null,
+        "plan_job_duration_ms": 8854.92,
+        "tools": [
+          "list_tickets",
+          "summarize_tickets",
+          "create_followup_tasks"
+        ],
+        "steps": [
+          {
+            "tool": "list_tickets",
+            "arguments": {
+              "limit": 6
+            },
+            "depends_on": []
+          },
+          {
+            "tool": "summarize_tickets",
+            "arguments": {},
+            "depends_on": [
+              "list_tickets"
+            ]
+          },
+          {
+            "tool": "create_followup_tasks",
+            "arguments": {},
+            "depends_on": [
+              "summarize_tickets"
+            ]
+          }
+        ],
+        "run_http_status": 200,
+        "status": "COMPLETED",
+        "ticket_ids": [
+          "T-102",
+          "T-104",
+          "T-101",
+          "T-103"
+        ],
+        "initial_status": "WAITING_FOR_APPROVAL",
+        "approval_plan_verified": true,
+        "tasks_before_approval_http_status": 200,
+        "tasks_before_approval_count": 0,
+        "approval_http_status": 200,
+        "tasks_before_resume_http_status": 200,
+        "tasks_before_resume_count": 0,
+        "resume_http_status": 200,
+        "workflow_http_status": 200,
+        "persisted_status": "COMPLETED",
+        "completion_events_http_status": 200,
+        "tasks_http_status": 200,
+        "followup_tasks": [
+          {
+            "ticket_id": "T-101",
+            "summary": "Priority 3: Duplicate invoice"
+          },
+          {
+            "ticket_id": "T-102",
+            "summary": "Priority 5: Checkout unavailable"
+          },
+          {
+            "ticket_id": "T-103",
+            "summary": "Priority 2: Profile image not updating"
+          },
+          {
+            "ticket_id": "T-104",
+            "summary": "Priority 4: Account access blocked"
+          }
+        ],
+        "matching_approval_events": 1
+      },
+      "approval_wait_passed": true,
+      "approval_passed": true,
+      "tasks_verified": true,
+      "workflow_id": "9cbfd672-0b33-46f1-869d-3d0d4dd7937c",
+      "plan_latency_ms": 10108.8
+    }
+  ]
+}

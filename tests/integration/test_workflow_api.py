@@ -1170,3 +1170,92 @@ def test_priority_ranking_and_exclusions_reach_ollama(scenario, monkeypatch, req
     response = client.post(path + "/plan")
     assert response.status_code == 200, response.text
     model.assert_called_once()
+
+
+def test_task_endpoint_reads_persisted_rows_and_scopes_them_to_the_workflow(scenario):
+    from app.persistence.database import engine
+
+    client, path, workflow_id, headers = scenario
+    with Session(engine) as session, session.begin():
+        other = Workflow(request="A different workflow")
+        session.add(other)
+        session.flush()
+        other_id = other.id
+        session.add(FollowupTask(workflow_id=other_id, ticket_id="T-102", summary="Other workflow task"))
+    try:
+        assert client.get(path + "/tasks").json() == []
+        unknown = client.get("/workflows/00000000-0000-0000-0000-000000000000/tasks")
+        assert unknown.status_code == 404
+        digest = request_approval(client, path)
+        assert client.get(path + "/tasks").json() == []
+        approved = client.post(path + "/approve", json={"plan_hash": digest}, headers=headers)
+        assert approved.status_code == 200, approved.text
+        assert client.get(path + "/tasks").json() == []
+        resumed = client.post(path + "/run")
+        assert resumed.status_code == 200, resumed.text
+        response = client.get(path + "/tasks")
+        assert response.status_code == 200
+        assert [row["ticket_id"] for row in response.json()] == ["T-101", "T-102", "T-104"]
+        assert all(set(row) == {"ticket_id", "summary"} for row in response.json())
+
+        with Session(engine) as session, session.begin():
+            task = session.get(FollowupTask, (workflow_id, "T-102"))
+            task.summary = "Stored value changed independently"
+        persisted = client.get(path + "/tasks").json()
+        assert next(row["summary"] for row in persisted if row["ticket_id"] == "T-102") == "Stored value changed independently"
+        completed = client.get(path + "/events").json()[-1]
+        assert next(row["summary"] for row in completed["details"]["followup_tasks"] if row["ticket_id"] == "T-102") != "Stored value changed independently"
+    finally:
+        with Session(engine) as session, session.begin():
+            session.execute(delete(FollowupTask).where(FollowupTask.workflow_id == other_id))
+            session.execute(delete(Workflow).where(Workflow.id == other_id))
+
+
+@pytest.mark.parametrize("planning_mode", ["sync", "job"])
+def test_evaluator_approves_resumes_and_verifies_database_tasks(scenario, monkeypatch, planning_mode):
+    import importlib.util
+    from pathlib import Path
+
+    from app.planner import jobs
+    from app.validation.plan import SupportAction, build_support_plan
+
+    client, path, workflow_id, headers = scenario
+    script = Path(__file__).resolve().parents[2] / "scripts" / "run_eval.py"
+    spec = importlib.util.spec_from_file_location("followup_evaluator", script)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    monkeypatch.setattr(jobs, "generate_plan", lambda _request: build_support_plan(SupportAction.FOLLOWUP, 3))
+    authenticated_paths = []
+
+    def request(_base_url, request_path, *, method="GET", payload=None, headers=None, **_kwargs):
+        if request_path == "/workflows" and method == "POST":
+            return 201, {"id": str(workflow_id)}
+        if planning_mode == "job" and request_path == path + "/plan-job" and method == "GET":
+            claim = jobs.claim_plan_job(workflow_id)
+            if claim is not None:
+                jobs.run_plan_job(claim)
+        if headers:
+            authenticated_paths.append(request_path)
+        response = client.request(method, request_path, json=payload, headers=headers)
+        return response.status_code, response.json()
+
+    monkeypatch.setattr(runner, "request_json", request)
+    case = {
+        "id": "persisted-followups", "category": "approval", "request": "Create three follow-up tasks",
+        "expect": {
+            "tools": ["list_tickets", "summarize_tickets", "create_followup_tasks"],
+            "limit": 3, "status": "WAITING_FOR_APPROVAL", "ticket_ids": ["T-102", "T-104", "T-101"],
+        },
+    }
+    result = runner.evaluate_case(
+        "http://testserver", case, planning_mode=planning_mode, poll_interval=0.001,
+        approve_followups=True, approval_token=headers["X-Axon-Approval-Token"],
+    )
+    assert result["passed"] is True, result
+    assert result["approval_wait_passed"] is True
+    assert result["approval_passed"] is True
+    assert result["tasks_verified"] is True
+    assert result["actual"]["persisted_status"] == "COMPLETED"
+    assert len(result["actual"]["followup_tasks"]) == 3
+    assert authenticated_paths == [path + "/approve"]
+    assert task_count(workflow_id) == 3

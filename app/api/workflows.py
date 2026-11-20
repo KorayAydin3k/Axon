@@ -25,7 +25,7 @@ from app.engine.workflow_engine import (
 )
 from app.observability.telemetry import log_event, observe_stage
 from app.persistence.database import engine
-from app.persistence.models import Workflow, WorkflowEvent, WorkflowStep
+from app.persistence.models import FollowupTask, Workflow, WorkflowEvent, WorkflowStep
 from app.planner.jobs import enqueue_plan_job, generate_workflow_plan
 from app.planner.ollama_planner import PlannerError, PlannerRejected
 from app.validation.plan import WorkflowPlan
@@ -177,6 +177,27 @@ def get_workflow(
     if workflow is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return _workflow_details(session, workflow)
+
+
+class FollowupTaskResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ticket_id: str
+    summary: str
+
+
+@router.get("/{workflow_id}/tasks", response_model=list[FollowupTaskResponse])
+def get_workflow_tasks(
+    workflow_id: UUID, session: Annotated[Session, Depends(get_session)]
+) -> list[FollowupTask]:
+    if session.get(Workflow, workflow_id) is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    statement = (
+        select(FollowupTask)
+        .where(FollowupTask.workflow_id == workflow_id)
+        .order_by(FollowupTask.ticket_id)
+    )
+    return list(session.scalars(statement))
 
 
 class WorkflowEventResponse(BaseModel):

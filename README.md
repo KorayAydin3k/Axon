@@ -143,7 +143,7 @@ The following **2026-11-20 Qwen3 4B** results are archived test-set observations
 | [Legacy holdout file](evals/planner_holdout.jsonl), 6 cases | Synchronous | 6/6 | 3/3 |
 | [Two-case subset](evals/results/2026-11-20/job-cases.jsonl) | Durable job | 2/2 | 1/1 |
 
-The synchronous suite passed **41/42** cases. One request returned HTTP 502 after about 180 seconds; operator logs identified `ollama_timeout`. The 26 attempted run-state checks passed, but one of the 27 supported cases never reached execution. Seven checks ended at `WAITING_FOR_APPROVAL`; the evaluation does not approve or verify the final task writes.
+The synchronous suite passed **41/42** cases. One request returned HTTP 502 after about 180 seconds; operator logs identified `ollama_timeout`. The 26 attempted run-state checks passed, but one of the 27 supported cases never reached execution. Seven checks ended at `WAITING_FOR_APPROVAL`; those archived runs did not approve or verify the final task writes.
 
 The separate two-case job run required **zero retries**. It validates that path for those inputs and does not replace the synchronous failure or demonstrate recovery from a live timeout. These reports predate the 15-minute model-residency setting.
 
@@ -163,6 +163,8 @@ python3 scripts/run_eval.py \
 ```
 
 Use `--planning-mode sync` for a single synchronous call per case. Reports include per-case results, actual HTTP statuses, and planning latency; job reports also retain claim counts and failure codes. The command exits with status 1 if any case fails. See [job evaluation semantics](docs/planning-job-evaluation.md) for wait limits and retry reporting.
+
+To test approval through completion, opt into `--approve-followups` with `AXON_APPROVAL_TOKEN` in the evaluator's environment. This checks the approval boundary, resumes execution and verifies the actual persisted task rows through `GET /workflows/{id}/tasks`. Reports distinguish full completion from the default approval-wait scope. See the [three-case completion check](docs/planning-job-evaluation.md#completing-approval-gated-cases); no new result is claimed for it in the archived table above.
 
 ## Scope
 

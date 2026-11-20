@@ -101,18 +101,22 @@ See [model residency](ollama-model-residency.md).
 
 ## What execution success means here
 
-For a supported request, the runner checks tool order, arguments and dependencies
-before calling `/run?plan=generated`. It then checks the expected workflow state
+In these archived runs, the runner checked tool order, arguments and dependencies
+before calling `/run?plan=generated`. It then checked the expected workflow state
 and selected ticket IDs in the event history. Tool selection alone is less
 strict than exact plan correctness: the right tools can still have the wrong
 ticket limit.
 
-Follow-up cases expect `WAITING_FOR_APPROVAL`. The runner does not submit an
-operator token, approve the plan, resume task creation or verify the final task
-rows. Its `execution_end_to_end_pass_rate` field therefore means success up to
+The archived follow-up cases expected `WAITING_FOR_APPROVAL`. Those runs did not
+submit an operator token, approve the plan, resume task creation or verify the
+final task rows. Their `execution_end_to_end_pass_rate` field therefore means success up to
 the dataset's expected state, not completion of every approval-gated write.
 Post-approval writes, replay protection and concurrent resume have separate
 integration tests.
+
+The runner now offers an explicit `--approve-followups` completion mode with
+persisted-task checks. That mode has a different `execution_scope` and does not
+change these historical results. See [completing approval-gated cases](planning-job-evaluation.md#completing-approval-gated-cases).
 
 CI runs `python -m pytest -q tests`, including the database integration suite
 and evaluator unit tests. Those tests use controlled planner responses; a green

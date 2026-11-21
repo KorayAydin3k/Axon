@@ -151,6 +151,8 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
 .envrc
 .venv
 env/
@@ -221,3 +223,13 @@ __marimo__/
 
 /dashboard/node_modules/
 /dashboard/dist/
+
+# Local Axon patch installers, source bundles, and publication exports
+/axon-*.patch
+/axon-*.zip
+/axon-*.py
+/axon-publication-summary.json
+
+# Temporary evaluation runs; reviewed dated archives remain eligible for Git
+/evals/results/planner-*/
+/evals/results/followup-completion.*/

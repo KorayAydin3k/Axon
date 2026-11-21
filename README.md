@@ -51,15 +51,17 @@ The execution tile totals the backend timings for Run and Resume in the current 
 
 ## Run locally
 
-Prerequisites are Git, Docker with Docker Compose, and enough disk space for the local Ollama model. The initial setup downloads container images and the model. Planning uses the local Ollama service.
+Prerequisites are Git, Python 3, Docker with Docker Compose, and enough disk space for the local Ollama model. The initial setup downloads container images and the model. Planning uses the local Ollama service.
 
-From the repository root, copy the example environment file.
+From the repository root, generate a private local environment file:
 
 ```bash
-test -f .env || cp .env.example .env
+python3 scripts/init_local_env.py
 ```
 
-Set `AXON_APPROVAL_TOKEN` in `.env` to a private development value. The following commands use the Qwen3 4B model from the evaluation. Match the downloaded tag to your planner configuration.
+The helper fills the blank fields in `.env.example` with a random database password, a matching `DATABASE_URL`, and a separate operator token. It writes `.env` with owner-only permissions and keeps an existing `.env` unchanged. For an existing setup, check that `AXON_APPROVAL_TOKEN` is set before trying approval. Use its value from your private `.env` in the dashboard's operator decision panel.
+
+The following commands use the Qwen3 4B model from the evaluation. Match the downloaded tag to your planner configuration.
 
 ```bash
 docker compose --profile local-ai up --wait --wait-timeout 120 db ollama
@@ -169,5 +171,7 @@ To test approval through completion, opt into `--approve-followups` with `AXON_A
 ## Scope
 
 Axon demonstrates controlled execution with simulated support data. Approval and rejection use a shared development token, without per-user identity or role management. Production deployment and multi-user authorization are outside the project's scope.
+
+Only the approval and rejection endpoints require the operator token. Workflow reads, creation, planning, and Run/Resume are unauthenticated. Keep the services on localhost and Codespaces forwarded ports private; the shared token does not provide authorization for the whole API.
 
 Browser plan jobs are queued in PostgreSQL and run by the Compose planning worker. The worker can reclaim an interrupted job after its 210-second lease expires. Each claim has a new token, and only the active claim can save a result. Ollama timeouts are retried in the same job, with up to three total attempts. If the dashboard stops waiting, select **Preview plan** again to check the same job. PostgreSQL persists step checkpoints to support resuming interrupted workflow execution.
